@@ -6,7 +6,10 @@ from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokeniz
 import torch
 import threading
 
+model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True) #, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # waiting for PR in transformers to be merged
+
 model_queue = []
+hooks = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
 
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
@@ -67,21 +70,42 @@ def history_to_llama(history, tokenizer, config):
     llama = []
     token_length = 0
     system_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.system_prompt}], tokenize=True, return_tensors='pt', add_generation_prompt=False)
+    history.reverse()
     for message in history:
         role = "assistant" if message.role == "character" else message.role
         llama_message = [{"role": role, "content": message.content}]
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt', add_generation_prompt=False)
-        if token_length + llama_message.shape[1] < 7200:
+        if token_length + llama_message.shape[1] < (7200 - system_prompt.shape[1]):
             llama.append(llama_message)
-        
+        else:
+            break
+    llama.append(system_prompt)
+    llama.reverse()
     llama = torch.cat(llama, 1)
     return llama
+
+def message_updater(message, streamer, character):
+    full_text = ""
+    limiter = time.time()
+    for text in streamer:
+        full_text = full_text + text
+        if time.time() - limiter > 0.8:
+            limiter = time.time()
+            if character.maw:
+                asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
+            else:
+                asyncio.run_coroutine_threadsafe(coro=hook[message.channel.parent.id].edit_message(message_id=message.id, content=full_text, thread=message.channel), loop=client.loop)
+    if character.maw:
+        asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
+    else:
+        asyncio.run_coroutine_threadsafe(coro=hook[message.channel.parent.id].edit_message(message_id=message.id, content=full_text, thread=message.channel), loop=client.loop)
 
 def watcher():
     model = None
     tokenizer = AutoTokenizer.from_pretrained(
                 "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
             ) # can just be kept loaded
+    stop_token = tokenizer.encode("<|eot_id|>")
     while True:
         if model_queue == []:
             if model != None:
@@ -102,5 +126,18 @@ def watcher():
         torch.cuda.empty_cache()
         current_gen = model_queue[0]
         history = current_gen.character.read_history()
+        history.append(MawCharacterMessage(current_gen.user_message.content, current_gen.user_message.id, "user"))
         history = history_to_llama(history, tokenizer, current_gen.character.config)
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+        streamer_thread = message_updater(current_gen.user_message, streamer, current_gen.character)
+        streamer_thread.start()
+        response = model.generate(**kwargs, streamer=streamer, eos_token_id=stop_token)
+        gc.collect()
+        torch.cuda.empty_cache()
+        model_queue.pop(0)
+
+@client.event
+def on_message():
+    
+
 client.run(TOKEN)
