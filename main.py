@@ -18,6 +18,85 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
 client = discord.Client(intents=intents)
 
+class CharacterModal(discord.ui.Modal):
+    def __init__(self, avatar):
+        super().__init__(
+            title="Make Character",
+            timeout=60 * 60 * 24,  # 1 day
+        )
+        self.avatar = avatar
+        self.name = discord.ui.TextInput(
+            label="Name",
+            style=discord.TextInputStyle.short,
+            placeholder="Name of the character. Ex: Maw",
+            required=True,
+            min_length=1,
+            max_length=50,
+        )
+        self.add_item(self.name)
+
+        self.description = discord.ui.TextInput(
+            label="Description",
+            style=discord.TextInputStyle.paragraph,
+            placeholder="Describe the character from a third person view. Ex: You are graceful.",
+            required=True,
+            min_length=30,
+            max_length=2000,
+        )
+        self.add_item(self.description)
+
+        self.first_message = discord.ui.TextInput(
+            label="First message",
+            placeholder="The first message for the character to send. Can be blank.",
+            style=discord.TextInputStyle.paragraph,
+            required=True,
+            min_length=0,
+            max_length=1000,
+        )
+        self.add_item(self.first_message)
+        
+        self.environment = discord.ui.TextInput(
+            label="Starting environment",
+            placeholder="The environment the character starts in. Ex: You in a large mansion.",
+            style=discord.TextInputStyle.paragraph,
+            required=True,
+            min_length=1,
+            max_length=1000,
+        )
+        
+        self.add_item(self.environment)
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.description.value[-1] != ".": description = self.description.value + "."
+        else: description = self.description.value
+        prompt = "Your name is " + self.name.value + ". " + description + " To do an action, you surround actions in stars *like this*. You surround your dialogue in quotes " + '"like this"' + ". The person you are talking to may do the same with stars and quotes."
+        response = prompt + " " + self.environment.value
+        cut_value = 1926 if self.avatar else 1993
+        if len(response) > cut_value: response = response[:cut_value] + "(cont.)"
+        else: response = response
+        if self.avatar:
+            avatar_image = await self.avatar.read()
+            try:
+                root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**", file=discord.File(fp=io.BytesIO(avatar_image), filename="avatar.png"))
+            except:
+                await interaction.send("Please make sure the avatar is under 25mb.")
+        else:
+            root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**")
+        try:
+            thread = await root.create_thread(name=self.name.value)
+        except:
+            await root.edit("Thread could not be created (are you already in one?)")
+        else:
+            await thread.join()
+            if self.first_message.value != "":
+                webhook = await get_webhook(root.channel)
+                if self.avatar:
+                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, avatar_url=root.attachments[0].url, wait=True, thread=thread, view=EditCharMessageButton())
+                else:
+                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, wait=True, thread=thread, view=EditCharMessageButton())
+            config = MawCharacterConfig(prompt, self.environment.value, root.channel, "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/history.txt")
+            make_maw_character("./characters/" + str(root.guild.id) + "/" + str(root.channel.id), config)
+            MawCharacter(self.name.value, config, False)
+
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None, character, user_message):
         super().__init__(timeout=timeout)
@@ -54,19 +133,23 @@ class MawCharacter:
         self.config = config
         self.maw = maw # Is this maw or a character
     def write_history(self, history):
+        print("WRITING")
         with open(self.history_path, "w") as history_file:
             with open(self.ids_path, "w") as ids_file:
                 for message in history:
+                    print(message.content)
                     history_file.write(message.content.replace("\n", r"\\n") + "\n")
                     role_prefix = "u" if message.role == "user" else "c"
                     ids_file.write(role_prefix + str(message.message_id)+"\n")
     def read_history(self):
         history = []
+        print("READING")
         if os.path.isfile(self.history_path):
             with open(self.history_path, "r") as history_file:
                 with open(self.ids_path, "r") as ids_file:
                     history_lines, ids = history_file.readlines(), ids_file.readlines()
                     for idx, message in enumerate(history_lines):
+                        print(message)
                         role = "user" if ids[idx][:1] == "u" else "character"
                         message_id = ids[idx][1:-1] # For simplicity with maw vs character redo, this is a string
                         history.append(MawCharacterMessage(message[:-1].replace(r"\\n", "\n"), message_id, role))
@@ -110,6 +193,7 @@ def history_to_llama(history, tokenizer, config):
             llama.append(environment_prompt)
     llama.append(system_prompt)
     llama.reverse()
+    history.reverse() # this was inplace so it needs to be flipped back
     llama = torch.cat(llama, 1)
     return llama
 
@@ -160,7 +244,6 @@ def watcher():
             torch.cuda.empty_cache()
             current_gen = model_queue[0]
             history = current_gen.character.read_history()
-            print(history)
             history.append(MawCharacterMessage(current_gen.user_message.content, str(current_gen.user_message.id), "user"))
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
@@ -209,6 +292,21 @@ async def on_message(message):
             channel = client.get_channel(old_message_id[1])
             old_message = await channel.fetch_message(old_message_id[0])
             await old_message.edit(old_message.content, view=None)
+
+@client.slash_command(description="Sends a form to make a character")
+async def character(
+        interaction: discord.Interaction,
+        avatar: Optional[discord.Attachment] = discord.SlashOption(
+            name="avatar",
+            required=False,
+            description="An avatar for your character. Must be jpg or png",
+        ),
+):
+    if avatar and not avatar.content_type == "image/jpeg" and not avatar.content_type == "image/png":
+        await interaction.response.send("Avatar is not png or jpg. Please try again")
+    else:
+        modal = CharacterModal(avatar)
+        await interaction.response.send_modal(modal)
 
 threading.Thread(target=watcher).start()
 client.run(TOKEN)
