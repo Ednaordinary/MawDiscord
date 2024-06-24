@@ -8,7 +8,7 @@ import torch
 import threading
 import asyncio
 
-model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True) #, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # waiting for PR in transformers to be merged
+model_args = dict(max_new_tokens=512, use_cache=True, do_sample=True) #, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # waiting for PR in transformers to be merged
 
 model_queue = []
 hooks = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -17,6 +17,15 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
 client = discord.Client(intents=intents)
+
+class RedoMessageButton(discord.ui.View):
+    def __init__(self, *, timeout=None, character):
+        self.charac
+        super().__init__(timeout=timeout)
+    @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary)
+    async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        
+        with open("./characters/" + str(interaction.channel.parent.id) + "/" + str(interaction.channel.id) + "/ids.txt", "r") as ids_file:
 
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
@@ -40,22 +49,22 @@ class MawCharacter:
         self.config = config
         self.maw = maw # Is this maw or a character
     def write_history(self, history):
-        with (open(self.history_path, "w"), open(self.ids_path, "w")) as (history_file, ids_file):
-            for message in history:
-                history_file.write(message.content.replace("\n", "\\n") + "\n")
-                role_prefix = "u" if message.role == "user" else ("c" if message.role == "character" else "s" )
-                ids_file.write(role_prefix + str(message.message_id))
+        with open(self.history_path, "w") as history_file:
+            with open(self.ids_path, "w") as ids_file:
+                for message in history:
+                    history_file.write(message.content.replace("\n", r"\\n") + "\n")
+                    role_prefix = "u" if message.role == "user" else "c"
+                    ids_file.write(role_prefix + str(message.message_id)+"\n")
     def read_history(self):
         history = []
         if os.path.isfile(self.history_path):
-            with (open(self.history_path, "r"), open(self.ids_path, "r")) as (history_file, ids_file):
-                history_lines, ids = history_file.readlines(), ids.readlines()
-                for idx, message in enumerate(history):
-                    try: # if they don't line up, stuff will break
-                        role = "user" if ids[idx][:1] == "u" else ("character" if ids[idx][:1] == "c" else "system")
-                        message_id = ids[idx][1:]
-                        history.append(MawCharacterMessage(message.replace("\\n", "\n"), message_id, role))
-                    except: pass
+            with open(self.history_path, "r") as history_file:
+                with open(self.ids_path, "r") as ids_file:
+                    history_lines, ids = history_file.readlines(), ids_file.readlines()
+                    for idx, message in enumerate(history_lines):
+                        role = "user" if ids[idx][:1] == "u" else "character"
+                        message_id = int(ids[idx][1:-1])
+                        history.append(MawCharacterMessage(message[:-1].replace(r"\\n", "\n"), message_id, role))
         return history
 
 class CharacterGen:
@@ -67,15 +76,15 @@ class CharacterGen:
 def make_maw_character(path, config):
     os.makedirs(path, exist_ok=True)
     with open(path + "/config.txt", "w") as config_file:
-        if config.thread_id: config_file.write(str(config.thread_id.replace("\n", "\\n")) + "\n")
+        if config.thread_id: config_file.write(str(config.thread_id.replace("\n", r"\\n")) + "\n")
         else: config_file.write("0\n")
-        config_file.write(str(config.system_prompt.replace("\n", "\\n")) + "\n")
-        config_file.write(str(config.environment_prompt.replace("\n", "\\n")) + "\n")
+        config_file.write(str(config.system_prompt.replace("\n", r"\\n")) + "\n")
+        config_file.write(str(config.environment_prompt.replace("\n", r"\\n")) + "\n")
 
 def read_config(path):
     with open(path + "/config.txt", "r") as config_file:
         lines = config_file.readlines()
-    return MawCharacterConfig(lines[1].replace("\\n", "\n"), lines[2].replace("\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt")
+    return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt")
 
 def history_to_llama(history, tokenizer, config):
     llama = []
@@ -142,13 +151,15 @@ def watcher():
             torch.cuda.empty_cache()
             current_gen = model_queue[0]
             history = current_gen.character.read_history()
+            print(history)
             history.append(MawCharacterMessage(current_gen.user_message.content, current_gen.user_message.id, "user"))
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character])
             streamer_thread.start()
             response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer, eos_token_id=stop_token)
-            history.append(MawCharacterMessage(response, current_gen.character_message.id, "character"))
+            decoded_response = tokenizer.decode(response[0][model_input.shape[1]:], skip_special_tokens=True)
+            history.append(MawCharacterMessage(decoded_response, current_gen.character_message.id, "character"))
             current_gen.character.write_history(history)
             gc.collect()
             torch.cuda.empty_cache()
@@ -165,6 +176,10 @@ async def on_message(message):
     global last_message
     maw_response = False
     if "Maw," in message.content and not r"\end" in message.content and not "/end" in message.content: maw_response = True
+    try:
+        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id: maw_response = True
+    except: pass
+    last_message[message.guild.id] = message
     if maw_response:
         maw_message = await message.channel.send("...")
         if os.path.isdir("./servers/" + str(message.guild.id)):
