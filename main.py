@@ -7,6 +7,7 @@ import time
 import torch
 import threading
 import asyncio
+from typing import Optional
 
 model_args = dict(max_new_tokens=512, use_cache=True, do_sample=True) #, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # waiting for PR in transformers to be merged
 
@@ -87,18 +88,57 @@ class CharacterModal(discord.ui.Modal):
             await root.edit("Thread could not be created (are you already in one?)")
         else:
             await thread.join()
-            if self.first_message.value != "":
-                webhook = await get_webhook(root.channel)
-                if self.avatar:
-                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, avatar_url=root.attachments[0].url, wait=True, thread=thread)
-                else:
-                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, wait=True, thread=thread)
             config = MawCharacterConfig(prompt, self.environment.value, root.channel, "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/history.txt", self.name.value)
             make_maw_character("./characters/" + str(root.guild.id) + "/" + str(root.channel.id), config)
             character = MawCharacter(self.name.value, config, False)
+            history = None
+            if self.first_message.value != "":
+                webhook = await get_webhook(root.channel)
+                if self.avatar:
+                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, avatar_url=root.attachments[0].url, wait=True, thread=thread, view=EditMessageButton(character, None))
+                else:
+                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, wait=True, thread=thread, view=EditMessageButton(character, None))
+                history = [MawCharacterMessage(self.first_message.value, hook_message.id, "character")]
+            if history:
+                character.write_history(history)
+
+class EditMessageModal(discord.ui.Modal):
+    def __init__(self, original_content, character, user_message):
+        super().__init__(
+            title="Edit Message",
+            timeout=60 * 60 * 24,  # 1 day
+        )
+        self.original_content = original_content
+        self.character = character
+        self.user_message = user_message
+        self.content = discord.ui.TextInput(
+            label="Message",
+            style=discord.TextInputStyle.paragraph,
+            placeholder="New content of the message",
+            default_value=self.original_content,
+            required=True,
+            min_length=1,
+            max_length=2000,
+        )
+        self.add_item(self.content)
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # This should not be called with maw, we don't allow editing maw message
+        history = self.character.read_history()
+        this_message = None
+        for idx, message in enumerate(history):
+            if int(message.message_id) == interaction.message.id:
+                this_message = (idx, message)
+        if this_message: #do not be destructive if stuff is weird
+            history[this_message[0]] = MawCharacterMessage(self.content.value, interaction.message_id, "character")
+            character.write_history(history)
+            if this_message[0] == len(history) - 1 and not idx == 0: # if this is the latest message but not the first message, add a redo button
+                view = EditAndRedoMessageButton(self.character, self.user_message)
+            else:
+                view = EditMessageButton(self.character, self.user_message)
+            await interaction.response.edit_message(self.content.value, view=view)
 
 class RedoMessageButton(discord.ui.View):
-    def __init__(self, *, timeout=None, character, user_message):
+    def __init__(self, *,timeout=None, character, user_message):
         super().__init__(timeout=timeout)
         self.character = character
         self.user_message = user_message
@@ -110,6 +150,32 @@ class RedoMessageButton(discord.ui.View):
             self.character.write_history(history[:-2])
         except: pass
         model_queue.append(CharacterGen(self.user_message, interaction.message, self.character))
+
+class EditAndRedoMessageButton(discord.ui.View):
+    def __init__(self, *, timeout=None, character, user_message):
+        super().__init__(timeout=timeout)
+        self.character = character
+        self.user_message = user_message
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary)
+    async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(EditMessageModal(interaction.message.content, self.character, self.user_message))
+    @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary)
+    async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="...")
+        history = self.character.read_history()
+        try:
+            self.character.write_history(history[:-2])
+        except: pass
+        model_queue.append(CharacterGen(self.user_message, interaction.message, self.character))
+
+class EditMessageButton(discord.ui.View):
+    def __init__(self, *, timeout=None, character, user_message):
+        super().__init__(timeout=timeout)
+        self.character = character
+        self.user_message = user_message
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary)
+    async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(EditMessageModal(interaction.message.content, self.character, self.user_message))
 
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
@@ -311,6 +377,15 @@ async def on_message(message):
         hook = await get_webhook(message.channel.parent)
         config = read_config("./characters/" + str(message.guild.id) + "/" + str(message.channel.id))
         character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel)
+        character = MawCharacter(config.name, config, False)
+        old_message_id = None
+        if os.path.isfile("./servers/" + str(message.guild.id) + "/history.txt"):
+            history = character.read_history()
+            old_message_id = int(history[-1])
+        model_queue.append(CharacterGen(message, character_message, character))
+        if old_message_id:
+            old_message = await message.channel.fetch_message(old_message_id)
+            await old_message.edit(old_message.content, view=None)
 
 @client.slash_command(description="Sends a form to make a character")
 async def character(
