@@ -1,5 +1,6 @@
 import os
 import gc
+import sys
 import nextcord as discord
 from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokenizer
@@ -134,12 +135,12 @@ class EditMessageModal(discord.ui.Modal):
                 this_message = (idx, message)
         if this_message: #do not be destructive if stuff is weird
             history[this_message[0]] = MawCharacterMessage(self.content.value, interaction.message.id, "character")
-            character.write_history(history)
+            self.character.write_history(history)
             if this_message[0] == len(history) - 1 and not idx == 0: # if this is the latest message but not the first message, add a redo button
                 view = EditAndRedoMessageButton(character=self.character, user_message=self.user_message)
             else:
                 view = EditMessageButton(character=self.character, user_message=self.user_message)
-            await interaction.response.edit_message(self.content.value, view=view)
+            await interaction.response.edit_message(content=self.content.value, view=view)
 
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *,timeout=None, character, user_message):
@@ -269,9 +270,9 @@ async def edit_add_redobutton(message, content, character, user_message):
     #views cannot be crafted outside of an event loop
     await message.edit(content, view=RedoMessageButton(character=character, user_message=user_message))
 
-async def edit_add_editredobutton(hook, message, content, character, user_message):
+async def edit_add_editredobutton(hook, message, content, character, user_message, thread_id):
     #views cannot be crafted outside of an event loop
-    await hook.edit_message(content=content, message_id=message.id, thread=message.channel.parent, view=EditAndRedoMessageButton(character=character, user_message=user_message))
+    await hook.edit_message(content=content, message_id=message.id, thread=thread_id, view=EditAndRedoMessageButton(character=character, user_message=user_message))
 
 async def get_webhook(channel):
     # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
@@ -286,11 +287,12 @@ async def get_webhook(channel):
         hook_list[channel.id] = hook
     return hook
 
-def message_updater(message, streamer, character, user_message):
+async def temp_edit(message_id, thread_id, content, channel_id):
+    await hook_list[channel_id].edit_message(message_id=message_id, content=content, thread=thread_id)
+
+def message_updater(message, streamer, character, user_message, thread_id, channel):
     full_text = ""
     limiter = time.time()
-    print(message)
-    if not character.maw: hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(message.channel), loop=client.loop).result()
     for text in streamer:
         print(text, flush=True, end='')
         full_text = full_text + text
@@ -299,11 +301,12 @@ def message_updater(message, streamer, character, user_message):
             if character.maw:
                 asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
             else:
-                asyncio.run_coroutine_threadsafe(coro=hook.edit_message(message_id=message.id, content=full_text, thread=message.channel), loop=client.loop)
+                #asyncio.run_coroutine_threadsafe(coro=hook_list[channel.id].edit_message(message_id=message.id, content=full_text, thread=thread_id), loop=client.loop)
+                asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread_id, full_text, channel.id), loop=client.loop)
     if character.maw:
         asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message), loop=client.loop)
     else:
-        asyncio.run_coroutine_threadsafe(coro=edit_add_editredobutton(hook, message, full_text, character, user_message), loop=client.loop)
+        asyncio.run_coroutine_threadsafe(coro=edit_add_editredobutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
 
 def watcher():
     model = None
@@ -334,7 +337,9 @@ def watcher():
             history.append(MawCharacterMessage(current_gen.user_message.content, str(current_gen.user_message.id), "user"))
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-            streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character, current_gen.user_message])
+            if current_gen.character.maw: thread_id, channel = None, current_gen.chacter_message.channel
+            else: thread_id, channel = current_gen.user_message.channel, current_gen.user_message.channel.parent
+            streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character, current_gen.user_message, thread_id, channel])
             streamer_thread.start()
             response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer, eos_token_id=stop_token)
             decoded_response = tokenizer.decode(response[0][model_input.shape[1]:], skip_special_tokens=True)
@@ -364,9 +369,10 @@ async def on_message(message):
         character_response = True
         maw_response = False
     if message.author.bot:
-        print("message is from bot")
         character_response = False
         maw_response = False
+    if type(message.channel) == discord.Thread:
+        maw_response = False # too much weird stuff with how threads are handled right now
     last_message[message.guild.id] = message
     if maw_response:
         maw_message = await message.channel.send("...")
@@ -402,7 +408,16 @@ async def on_message(message):
                 user_message = None
         model_queue.append(CharacterGen(message, character_message, character))
         if old_message_id:
-            await hook.edit_message(message_id=old_message_id, view=EditMessageButton(character=character, user_message=user_message), thread=message.channel)
+            try:
+                await hook.edit_message(message_id=old_message_id, view=EditMessageButton(character=character, user_message=user_message), thread=message.channel)
+            except: pass # isn't really needed but I don't like random error messages in my console
+
+@client.event
+async def on_raw_message_edit(payload):
+    payload.message_id
+    channel = client.get_channel(payload.channel_id)
+    if isinstance(channel, discord.Thread) and os.path.exists("./characters/" + str(channel.guild.id) + "/" + str(channel.id) + "/"):
+        config = read_config()
 
 @client.slash_command(description="Sends a form to make a character")
 async def character(
