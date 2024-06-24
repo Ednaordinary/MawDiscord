@@ -20,6 +20,8 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
 client = discord.Client(intents=intents)
+all_tokens = 0
+all_time = 0
 
 class CharacterModal(discord.ui.Modal):
     def __init__(self, avatar):
@@ -184,8 +186,9 @@ class EditAndRedoMessageButton(discord.ui.View):
         message_idx = None
         for idx, message in enumerate(history):
             if int(message.message_id) == interaction.message.id:
-                message_idx = idx 
-        history.pop(idx)
+                message_idx = idx
+        if message_idx != None:
+            history.pop(idx)
         self.character.write_history(history)
         await interaction.response.pong()
         await interaction.message.delete()
@@ -206,7 +209,8 @@ class EditMessageButton(discord.ui.View):
         for idx, message in enumerate(history):
             if int(message.message_id) == interaction.message.id:
                 message_idx = idx 
-        history.pop(idx)
+        if message_idx != None:
+            history.pop(idx)
         self.character.write_history(history)
         await interaction.response.pong()
         await interaction.message.delete()
@@ -272,7 +276,7 @@ def make_maw_character(path, config):
 def read_config(path):
     with open(path + "/config.txt", "r") as config_file:
         lines = config_file.readlines()
-    if len(lines) > 3:
+    if len(lines) > 4:
         return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], lines[4])
     else:
         return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], None)
@@ -335,7 +339,6 @@ def message_updater(message, streamer, character, user_message, thread_id, chann
             if character.maw:
                 asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
             else:
-                #asyncio.run_coroutine_threadsafe(coro=hook_list[channel.id].edit_message(message_id=message.id, content=full_text, thread=thread_id), loop=client.loop)
                 asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread_id, full_text, channel.id), loop=client.loop)
     if character.maw:
         asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message), loop=client.loop)
@@ -343,6 +346,8 @@ def message_updater(message, streamer, character, user_message, thread_id, chann
         asyncio.run_coroutine_threadsafe(coro=edit_add_editredobutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
 
 def watcher():
+    global all_tokens
+    global all_time
     model = None
     tokenizer = AutoTokenizer.from_pretrained(
                 "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
@@ -356,6 +361,8 @@ def watcher():
                 torch.cuda.empty_cache()
             time.sleep(0.01)
         else:
+            if all_tokens != 0:
+                asyncio.run_coroutine_threadsafe(coro=client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.online), loop=client.loop)
             current_gen = model_queue[0]
             history = current_gen.character.read_history()
             history.append(MawCharacterMessage(current_gen.user_message.content, str(current_gen.user_message.id), "user"))
@@ -372,11 +379,15 @@ def watcher():
             torch.cuda.empty_cache()
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-            if current_gen.character.maw: thread_id, channel = None, current_gen.chacter_message.channel
+            if current_gen.character.maw: thread_id, channel = None, current_gen.character_message.channel
             else: thread_id, channel = current_gen.user_message.channel, current_gen.user_message.channel.parent
             streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character, current_gen.user_message, thread_id, channel])
             streamer_thread.start()
+            start_time = time.time()
             response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer, eos_token_id=stop_token)
+            all_tokens += len(response[0][model_input.shape[1]:])
+            all_time += time.time() - start_time
+            asyncio.run_coroutine_threadsafe(coro=client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(round(len(response[0][model_input.shape[1]:]) / (time.time() - start_time), 2)) + " tps | " + str(round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.idle), loop=client.loop)
             decoded_response = tokenizer.decode(response[0][model_input.shape[1]:], skip_special_tokens=True)
             if current_gen.character.maw: history.append(MawCharacterMessage(decoded_response, (str(current_gen.character_message.id) + "-" + str(current_gen.character_message.channel.id)), "character"))
             else: history.append(MawCharacterMessage(decoded_response, current_gen.character_message.id, "character"))
@@ -417,7 +428,10 @@ async def on_message(message):
             character = MawCharacter("Maw", config, True)
             if os.path.isfile("./servers/" + str(message.guild.id) + "/history.txt"):
                 history = character.read_history()
-                old_message_id = (int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
+                try:
+                    old_message_id = (int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
+                except:
+                    
         else:
             system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna."
             config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None)
@@ -467,8 +481,8 @@ async def on_raw_message_edit(payload):
                 if int(message.message_id) == payload.message_id:
                     message_idx = idx
                     break
-            if message_idx:
-                history[message_idx] = MawCharacterMessage(new_message.content, history[message_idx].message_id, history[message_idx].role)
+            if message_idx != None:
+                history[message_idx] = MawCharacterMessage(payload.data["content"], history[message_idx].message_id, history[message_idx].role)
             character.write_history(history)
 
 @client.event
@@ -484,8 +498,22 @@ async def on_raw_message_delete(payload):
             if int(message.message_id) == payload.message_id:
                 message_idx = idx
                 break
-        if message_idx: history.pop(message_idx)
+        if message_idx != None: history.pop(message_idx)
         character.write_history(history)
+        try:
+            edit_message = history[-1]
+        except:
+            pass
+        else:
+            user_message=None
+            try:
+                user_message = await channel.fetch_message(history[-2].message_id)
+            except:
+                pass
+            if edit_message.role == "character":
+                edit_message = await channel.fetch_message(edit_message.message_id)
+                hook = await get_webhook(channel.parent)
+                await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButton(character=character, user_message=user_message))
 
 @client.slash_command(description="Sends a form to make a character")
 async def character(
