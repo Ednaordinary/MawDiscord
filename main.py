@@ -11,7 +11,7 @@ import threading
 import asyncio
 from typing import Optional
 
-model_args = dict(max_new_tokens=512, use_cache=True, do_sample=True) #, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # waiting for PR in transformers to be merged
+model_args = dict(max_new_tokens=512, use_cache=True, do_sample=True, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # PR isnt merged but including in readme
 
 model_queue = []
 hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -409,8 +409,8 @@ async def on_message(message):
     character_response = False
     if "Maw," in message.content and not r"\end" in message.content and not "/end" in message.content: maw_response = True
     try:
-        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel and not r"\end" in message.content and not "/end" in content: maw_response = True
-    except: pass
+        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel and not r"\end" in message.content and not "/end" in message.content: maw_response = True; print("Continuing response")
+    except Exception as e: print(repr(e)); pass
     if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
         character_response = True
         maw_response = False
@@ -431,7 +431,7 @@ async def on_message(message):
                 try:
                     old_message_id = (int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
                 except:
-                    
+                    pass
         else:
             system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna."
             config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None)

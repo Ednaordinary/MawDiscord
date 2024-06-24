@@ -1,0 +1,7 @@
+nextcord
+transformers
+accelerate
+python-dotenv
+torch
+setuptools
+flash_attn
