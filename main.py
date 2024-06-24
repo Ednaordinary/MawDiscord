@@ -11,7 +11,7 @@ import asyncio
 model_args = dict(max_new_tokens=512, use_cache=True, do_sample=True) #, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # waiting for PR in transformers to be merged
 
 model_queue = []
-hooks = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
+hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
 last_message = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -90,12 +90,12 @@ class CharacterModal(discord.ui.Modal):
             if self.first_message.value != "":
                 webhook = await get_webhook(root.channel)
                 if self.avatar:
-                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, avatar_url=root.attachments[0].url, wait=True, thread=thread, view=EditCharMessageButton())
+                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, avatar_url=root.attachments[0].url, wait=True, thread=thread)
                 else:
-                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, wait=True, thread=thread, view=EditCharMessageButton())
-            config = MawCharacterConfig(prompt, self.environment.value, root.channel, "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/history.txt")
+                    hook_message = await webhook.send(content=self.first_message.value, username=self.name.value, wait=True, thread=thread)
+            config = MawCharacterConfig(prompt, self.environment.value, root.channel, "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(root.channel.id) + "/history.txt", self.name.value)
             make_maw_character("./characters/" + str(root.guild.id) + "/" + str(root.channel.id), config)
-            MawCharacter(self.name.value, config, False)
+            character = MawCharacter(self.name.value, config, False)
 
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None, character, user_message):
@@ -118,12 +118,13 @@ class MawCharacterMessage:
         self.role = role
 
 class MawCharacterConfig:
-    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path):
+    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path, name):
         self.system_prompt = system_prompt
         self.environment_prompt = environment_prompt
         self.thread_id = thread_id
         self.ids_path = ids_path
         self.history_path = history_path
+        self.name = name
 
 class MawCharacter:
     def __init__(self, name, config, maw):
@@ -133,23 +134,19 @@ class MawCharacter:
         self.config = config
         self.maw = maw # Is this maw or a character
     def write_history(self, history):
-        print("WRITING")
         with open(self.history_path, "w") as history_file:
             with open(self.ids_path, "w") as ids_file:
                 for message in history:
-                    print(message.content)
                     history_file.write(message.content.replace("\n", r"\\n") + "\n")
                     role_prefix = "u" if message.role == "user" else "c"
                     ids_file.write(role_prefix + str(message.message_id)+"\n")
     def read_history(self):
         history = []
-        print("READING")
         if os.path.isfile(self.history_path):
             with open(self.history_path, "r") as history_file:
                 with open(self.ids_path, "r") as ids_file:
                     history_lines, ids = history_file.readlines(), ids_file.readlines()
                     for idx, message in enumerate(history_lines):
-                        print(message)
                         role = "user" if ids[idx][:1] == "u" else "character"
                         message_id = ids[idx][1:-1] # For simplicity with maw vs character redo, this is a string
                         history.append(MawCharacterMessage(message[:-1].replace(r"\\n", "\n"), message_id, role))
@@ -168,11 +165,12 @@ def make_maw_character(path, config):
         else: config_file.write("0\n")
         config_file.write(str(config.system_prompt.replace("\n", r"\\n")) + "\n")
         config_file.write(str(config.environment_prompt.replace("\n", r"\\n")) + "\n")
+        config_file.write(str(config.name.replace("\n", r"\\n")) + "\n")
 
 def read_config(path):
     with open(path + "/config.txt", "r") as config_file:
         lines = config_file.readlines()
-    return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt")
+    return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3])
 
 def history_to_llama(history, tokenizer, config):
     llama = []
@@ -200,6 +198,19 @@ def history_to_llama(history, tokenizer, config):
 async def edit_add_redobutton(message, content, character, user_message):
     #views cannot be crafted outside of an event loop
     await message.edit(content, view=RedoMessageButton(character=character, user_message=user_message))
+
+async def get_webhook(channel):
+    # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
+    try:
+        hook = hook_list[channel.id]
+    except:
+        all_hooks = await channel.webhooks()
+        for each_hook in all_hooks:
+            if each_hook.user == client.user:
+                await each_hook.delete()
+        hook = await channel.create_webhook(name="Character hook")
+        hook_list[channel.id] = hook
+    return hook
 
 def message_updater(message, streamer, character, user_message):
     full_text = ""
@@ -268,10 +279,14 @@ async def on_message(message):
     global model_queue
     global last_message
     maw_response = False
+    character_response = False
     if "Maw," in message.content and not r"\end" in message.content and not "/end" in message.content: maw_response = True
     try:
-        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel: maw_response = True
+        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel and not r"\end" in message.content and not "/end" in content: maw_response = True
     except: pass
+    if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
+        character_response = True
+        maw_response = False
     last_message[message.guild.id] = message
     if maw_response:
         maw_message = await message.channel.send("...")
@@ -284,7 +299,7 @@ async def on_message(message):
                 old_message_id = (int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
         else:
             system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna."
-            config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt")
+            config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw")
             make_maw_character("./servers/" + str(message.guild.id), config)
             character = MawCharacter("Maw", config, True)
         model_queue.append(CharacterGen(message, maw_message, character))
@@ -292,6 +307,10 @@ async def on_message(message):
             channel = client.get_channel(old_message_id[1])
             old_message = await channel.fetch_message(old_message_id[0])
             await old_message.edit(old_message.content, view=None)
+    if character_response:
+        hook = await get_webhook(message.channel.parent)
+        config = read_config("./characters/" + str(message.guild.id) + "/" + str(message.channel.id))
+        character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel)
 
 @client.slash_command(description="Sends a form to make a character")
 async def character(
