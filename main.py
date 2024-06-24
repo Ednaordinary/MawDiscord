@@ -1,3 +1,4 @@
+import io
 import os
 import gc
 import sys
@@ -47,16 +48,6 @@ class CharacterModal(discord.ui.Modal):
         )
         self.add_item(self.description)
 
-        self.first_message = discord.ui.TextInput(
-            label="First message",
-            placeholder="The first message for the character to send. Can be blank.",
-            style=discord.TextInputStyle.paragraph,
-            required=False,
-            min_length=0,
-            max_length=1000,
-        )
-        self.add_item(self.first_message)
-        
         self.environment = discord.ui.TextInput(
             label="Starting environment",
             placeholder="The environment the character starts in. Ex: You in a large mansion.",
@@ -67,6 +58,16 @@ class CharacterModal(discord.ui.Modal):
         )
         
         self.add_item(self.environment)
+
+        self.first_message = discord.ui.TextInput(
+            label="First message",
+            placeholder="The first message for the character to send. Can be blank.",
+            style=discord.TextInputStyle.paragraph,
+            required=False,
+            min_length=0,
+            max_length=1000,
+        )
+        self.add_item(self.first_message)
     async def callback(self, interaction: discord.Interaction) -> None:
         if self.description.value[-1] != ".": description = self.description.value + "."
         else: description = self.description.value
@@ -79,8 +80,9 @@ class CharacterModal(discord.ui.Modal):
             avatar_image = await self.avatar.read()
             try:
                 root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**", file=discord.File(fp=io.BytesIO(avatar_image), filename="avatar.png"))
-            except:
-                await interaction.send("Please make sure the avatar is under 25mb.")
+            except Exception as e:
+                await interaction.send("Failed: " + str(repr(e)))
+                return
         else:
             root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**")
         try:
@@ -93,7 +95,10 @@ class CharacterModal(discord.ui.Modal):
             await root.edit("Thread could not be created (are you already in one?)")
         else:
             await thread.join()
-            config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value)
+            if self.avatar:
+                config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value, root.attachments[0].url)
+            else:
+                config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value, None)
             make_maw_character("./characters/" + str(root.guild.id) + "/" + str(thread.id), config)
             character = MawCharacter(self.name.value, config, False)
             history = None
@@ -172,6 +177,18 @@ class EditAndRedoMessageButton(discord.ui.View):
             self.character.write_history(history[:-2])
         except: pass
         model_queue.append(CharacterGen(self.user_message, interaction.message, self.character))
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary)
+    async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        #Only characters use this class so delete is here
+        history = self.character.read_history()
+        message_idx = None
+        for idx, message in enumerate(history):
+            if int(message.message_id) == interaction.message.id:
+                message_idx = idx 
+        history.pop(idx)
+        self.character.write_history(history)
+        await interaction.response.pong()
+        await interaction.message.delete()
 
 class EditMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None, character, user_message):
@@ -181,6 +198,18 @@ class EditMessageButton(discord.ui.View):
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary)
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.send_modal(EditMessageModal(interaction.message.content, self.character, self.user_message))
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary)
+    async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        #Only characters use this class so delete is here
+        history = self.character.read_history()
+        message_idx = None
+        for idx, message in enumerate(history):
+            if int(message.message_id) == interaction.message.id:
+                message_idx = idx 
+        history.pop(idx)
+        self.character.write_history(history)
+        await interaction.response.pong()
+        await interaction.message.delete()
 
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
@@ -189,13 +218,14 @@ class MawCharacterMessage:
         self.role = role
 
 class MawCharacterConfig:
-    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path, name):
+    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path, name, avatar):
         self.system_prompt = system_prompt
         self.environment_prompt = environment_prompt
         self.thread_id = thread_id
         self.ids_path = ids_path
         self.history_path = history_path
         self.name = name
+        self.avatar = avatar
 
 class MawCharacter:
     def __init__(self, name, config, maw):
@@ -237,11 +267,15 @@ def make_maw_character(path, config):
         config_file.write(str(config.system_prompt.replace("\n", r"\\n")) + "\n")
         config_file.write(str(config.environment_prompt.replace("\n", r"\\n")) + "\n")
         config_file.write(str(config.name.replace("\n", r"\\n")) + "\n")
+        if config.avatar: config_file.write(str(config.avatar) + "\n")
 
 def read_config(path):
     with open(path + "/config.txt", "r") as config_file:
         lines = config_file.readlines()
-    return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3])
+    if len(lines) > 3:
+        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], lines[4])
+    else:
+        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], None)
 
 def history_to_llama(history, tokenizer, config):
     llama = []
@@ -322,6 +356,10 @@ def watcher():
                 torch.cuda.empty_cache()
             time.sleep(0.01)
         else:
+            current_gen = model_queue[0]
+            history = current_gen.character.read_history()
+            history.append(MawCharacterMessage(current_gen.user_message.content, str(current_gen.user_message.id), "user"))
+            current_gen.character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
             if model == None:
                 model = AutoModelForCausalLM.from_pretrained(
                     "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
@@ -332,9 +370,6 @@ def watcher():
                 )
             gc.collect()
             torch.cuda.empty_cache()
-            current_gen = model_queue[0]
-            history = current_gen.character.read_history()
-            history.append(MawCharacterMessage(current_gen.user_message.content, str(current_gen.user_message.id), "user"))
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             if current_gen.character.maw: thread_id, channel = None, current_gen.chacter_message.channel
@@ -385,7 +420,7 @@ async def on_message(message):
                 old_message_id = (int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
         else:
             system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna."
-            config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw")
+            config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None)
             make_maw_character("./servers/" + str(message.guild.id), config)
             character = MawCharacter("Maw", config, True)
         model_queue.append(CharacterGen(message, maw_message, character))
@@ -396,12 +431,17 @@ async def on_message(message):
     if character_response:
         hook = await get_webhook(message.channel.parent)
         config = read_config("./characters/" + str(message.guild.id) + "/" + str(message.channel.id))
-        character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel)
+        if config.avatar:
+            character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel, avatar_url=config.avatar)
+        else:
+            character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel)
         character = MawCharacter(config.name, config, False)
         old_message_id = None
-        if os.path.isfile("./servers/" + str(message.guild.id) + "/history.txt"):
+        if os.path.isfile("./characters/" + str(message.guild.id) + "/" + str(message.channel.id) + "/history.txt"):
             history = character.read_history()
-            old_message_id = int(history[-1].message_id)
+            try:
+                old_message_id = int(history[-1].message_id)
+            except: pass
             try:
                 user_message = history[-2]
             except:
@@ -417,7 +457,35 @@ async def on_raw_message_edit(payload):
     payload.message_id
     channel = client.get_channel(payload.channel_id)
     if isinstance(channel, discord.Thread) and os.path.exists("./characters/" + str(channel.guild.id) + "/" + str(channel.id) + "/"):
-        config = read_config()
+        config = read_config("./characters/" + str(channel.guild.id) + "/" + str(channel.id))
+        character = MawCharacter(config.name, config, False)
+        new_message = await channel.fetch_message(payload.message_id)
+        if not new_message.author.bot:
+            history = character.read_history()
+            message_idx = None
+            for idx, message in enumerate(history):
+                if int(message.message_id) == payload.message_id:
+                    message_idx = idx
+                    break
+            if message_idx:
+                history[message_idx] = MawCharacterMessage(new_message.content, history[message_idx].message_id, history[message_idx].role)
+            character.write_history(history)
+
+@client.event
+async def on_raw_message_delete(payload):
+    payload.message_id
+    channel = client.get_channel(payload.channel_id)
+    if isinstance(channel, discord.Thread) and os.path.exists("./characters/" + str(channel.guild.id) + "/" + str(channel.id) + "/"):
+        config = read_config("./characters/" + str(channel.guild.id) + "/" + str(channel.id))
+        character = MawCharacter(config.name, config, False)
+        message_idx = None
+        history = character.read_history()
+        for idx, message in enumerate(history):
+            if int(message.message_id) == payload.message_id:
+                message_idx = idx
+                break
+        if message_idx: history.pop(message_idx)
+        character.write_history(history)
 
 @client.slash_command(description="Sends a form to make a character")
 async def character(
@@ -429,7 +497,7 @@ async def character(
         ),
 ):
     if avatar and not avatar.content_type == "image/jpeg" and not avatar.content_type == "image/png":
-        await interaction.response.send("Avatar is not png or jpg. Please try again")
+        await interaction.response.send_message("Avatar is not png or jpg. Please try again")
     else:
         modal = CharacterModal(avatar)
         await interaction.response.send_modal(modal)
