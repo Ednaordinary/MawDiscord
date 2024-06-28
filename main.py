@@ -407,10 +407,10 @@ async def on_message(message):
     global last_message
     maw_response = False
     character_response = False
-    if "Maw," in message.content and not r"\end" in message.content and not "/end" in message.content: maw_response = True
+    if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
     try:
         if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel and not r"\end" in message.content and not "/end" in message.content: maw_response = True; print("Continuing response")
-    except Exception as e: print(repr(e)); pass
+    except: pass
     if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
         character_response = True
         maw_response = False
