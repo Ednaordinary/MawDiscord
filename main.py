@@ -11,7 +11,7 @@ import threading
 import asyncio
 from typing import Optional
 
-model_args = dict(max_new_tokens=512, use_cache=True, do_sample=True) #, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # waiting for PR in transformers to be merged
+model_args = dict(max_new_tokens=256, use_cache=True, do_sample=True, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # PR isnt merged but including in readme
 
 model_queue = []
 hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -75,7 +75,7 @@ class CharacterModal(discord.ui.Modal):
         else: description = self.description.value
         prompt = "Your name is " + self.name.value + ". " + description + " To do an action, you surround actions in stars *like this*. You surround your dialogue in quotes " + '"like this"' + ". The person you are talking to may do the same with stars and quotes."
         response = prompt + " " + self.environment.value
-        cut_value = 1926 if self.avatar else 1993
+        cut_value = 1900
         if len(response) > cut_value: response = response[:cut_value] + "(cont.)"
         else: response = response
         if self.avatar:
@@ -292,16 +292,19 @@ def history_to_llama(history, tokenizer, config):
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt', add_generation_prompt=True if idx == 0 else False)
         if token_length + llama_message.shape[1] < (7200 - system_prompt.shape[1]):
             llama.append(llama_message)
+            token_length += llama_message.shape[1]
         else:
             break
     if config.environment_prompt != "":
         environment_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt', add_generation_prompt=False)
         if token_length + llama_message.shape[1] < (7200 - system_prompt.shape[1]):
             llama.append(environment_prompt)
+            token_length += llama_message.shape[1]
     llama.append(system_prompt)
     llama.reverse()
     history.reverse() # this was inplace so it needs to be flipped back
     llama = torch.cat(llama, 1)
+    print(token_length, llama.shape)
     return llama
 
 async def edit_add_redobutton(message, content, character, user_message):
@@ -374,6 +377,7 @@ def watcher():
                     torch_dtype=torch.bfloat16,
                     low_cpu_mem_usage=True,
                     attn_implementation="flash_attention_2",
+                    load_in_8bit=False,
                 )
             gc.collect()
             torch.cuda.empty_cache()
@@ -392,6 +396,7 @@ def watcher():
             if current_gen.character.maw: history.append(MawCharacterMessage(decoded_response, (str(current_gen.character_message.id) + "-" + str(current_gen.character_message.channel.id)), "character"))
             else: history.append(MawCharacterMessage(decoded_response, current_gen.character_message.id, "character"))
             current_gen.character.write_history(history)
+            del response, decoded_response, model_input
             gc.collect()
             torch.cuda.empty_cache()
             model_queue.pop(0)
@@ -407,10 +412,15 @@ async def on_message(message):
     global last_message
     maw_response = False
     character_response = False
-    if "Maw," in message.content and not r"\end" in message.content and not "/end" in message.content: maw_response = True
+    if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
     try:
-        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel and not r"\end" in message.content and not "/end" in content: maw_response = True
-    except: pass
+        last_message[message.guild.id]
+    except:
+        print("saving last message")
+        last_message[message.guild.id] = message
+    else:
+        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel and not r"\end" in message.content and not "/end" in message.content:
+            maw_response = True
     if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
         character_response = True
         maw_response = False
@@ -419,8 +429,8 @@ async def on_message(message):
         maw_response = False
     if type(message.channel) == discord.Thread:
         maw_response = False # too much weird stuff with how threads are handled right now
-    last_message[message.guild.id] = message
     if maw_response:
+        last_message[message.guild.id] = message
         maw_message = await message.channel.send("...")
         old_message_id = None
         if os.path.isdir("./servers/" + str(message.guild.id)):
@@ -431,7 +441,7 @@ async def on_message(message):
                 try:
                     old_message_id = (int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
                 except:
-                    
+                    pass
         else:
             system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna."
             config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None)
@@ -470,20 +480,23 @@ async def on_message(message):
 async def on_raw_message_edit(payload):
     payload.message_id
     channel = client.get_channel(payload.channel_id)
-    if isinstance(channel, discord.Thread) and os.path.exists("./characters/" + str(channel.guild.id) + "/" + str(channel.id) + "/"):
-        config = read_config("./characters/" + str(channel.guild.id) + "/" + str(channel.id))
-        character = MawCharacter(config.name, config, False)
-        new_message = await channel.fetch_message(payload.message_id)
-        if not new_message.author.bot:
-            history = character.read_history()
-            message_idx = None
-            for idx, message in enumerate(history):
-                if int(message.message_id) == payload.message_id:
-                    message_idx = idx
-                    break
-            if message_idx != None:
-                history[message_idx] = MawCharacterMessage(payload.data["content"], history[message_idx].message_id, history[message_idx].role)
-            character.write_history(history)
+    try: payload.data["content"]
+    except: pass
+    else:
+        if isinstance(channel, discord.Thread) and os.path.exists("./characters/" + str(channel.guild.id) + "/" + str(channel.id) + "/"):
+            config = read_config("./characters/" + str(channel.guild.id) + "/" + str(channel.id))
+            character = MawCharacter(config.name, config, False)
+            new_message = await channel.fetch_message(payload.message_id)
+            if not new_message.author.bot:
+                history = character.read_history()
+                message_idx = None
+                for idx, message in enumerate(history):
+                    if int(message.message_id) == payload.message_id:
+                        message_idx = idx
+                        break
+                if message_idx != None:
+                    history[message_idx] = MawCharacterMessage(payload.data["content"], history[message_idx].message_id, history[message_idx].role)
+                character.write_history(history)
 
 @client.event
 async def on_raw_message_delete(payload):
