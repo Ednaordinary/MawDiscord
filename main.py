@@ -379,7 +379,7 @@ async def async_watcher():
                 async for i in vram.wait_for_allocation("Maw"):
                     print(i)
                     if current_gen.character.maw:
-                        asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit("(Waiting for " + str(i) + "before loading model.)"), loop=client.loop)
+                        asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit("(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                     else:
                         asyncio.run_coroutine_threadsafe(coro=temp_edit(current_gen.character_message.id, current_gen.character_message.channel.id, "(Waiting for " + str(i) + "before loading model.)", current_gen.character_message.channel.parent.id), loop=client.loop)
                 print("memory allocated, loading model")
