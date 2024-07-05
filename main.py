@@ -10,8 +10,9 @@ import torch
 import threading
 import asyncio
 from typing import Optional
+import vram
 
-model_args = dict(max_new_tokens=256, use_cache=True, do_sample=True, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # PR isnt merged but including in readme
+model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # PR isnt merged but including in readme
 
 model_queue = []
 hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -348,7 +349,7 @@ def message_updater(message, streamer, character, user_message, thread_id, chann
     else:
         asyncio.run_coroutine_threadsafe(coro=edit_add_editredobutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
 
-def watcher():
+async def async_watcher():
     global all_tokens
     global all_time
     model = None
@@ -362,6 +363,7 @@ def watcher():
                 model = None
                 gc.collect()
                 torch.cuda.empty_cache()
+                vram.deallocate("Maw")
             time.sleep(0.01)
         else:
             if all_tokens != 0:
@@ -371,6 +373,16 @@ def watcher():
             history.append(MawCharacterMessage(current_gen.user_message.content, str(current_gen.user_message.id), "user"))
             current_gen.character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
             if model == None:
+                print("allocating memory")
+                vram.allocate("Maw")
+                print("request sent")
+                async for i in vram.wait_for_allocation("Maw"):
+                    print(i)
+                    if current_gen.character.maw:
+                        asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit("(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
+                    else:
+                        asyncio.run_coroutine_threadsafe(coro=temp_edit(current_gen.character_message.id, current_gen.character_message.channel.id, "(Waiting for " + str(i) + "before loading model.)", current_gen.character_message.channel.parent.id), loop=client.loop)
+                print("memory allocated, loading model")
                 model = AutoModelForCausalLM.from_pretrained(
                     "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
                     device_map="auto",
@@ -400,6 +412,10 @@ def watcher():
             gc.collect()
             torch.cuda.empty_cache()
             model_queue.pop(0)
+
+def watcher():
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(async_watcher())
 
 @client.event
 async def on_ready():
