@@ -16,6 +16,7 @@ model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matchi
 
 model_queue = []
 hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
+second_last_message = {}
 last_message = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -216,6 +217,20 @@ class EditMessageButton(discord.ui.View):
         await interaction.response.pong()
         await interaction.message.delete()
 
+class ResetContextButton(discord.ui.View):
+    def __init__(self, *, timeout=None, history_path, ids_path):
+        super().__init__(timeout=timeout)
+        self.history_path = history_path
+        self.ids_path = ids_path
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.red)
+    async def reset_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if os.path.isfile(self.history_path) and os.path.isfile(self.ids_path):
+            await interaction.response.edit_message(content="Context deleted.", view=None)
+            os.remove(self.history_path)
+            os.remove(self.ids_path)
+        else:
+            await interaction.response.edit_message(content="No context found to delete.", view=None)
+
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
         self.content = content
@@ -291,14 +306,14 @@ def history_to_llama(history, tokenizer, config):
         role = "assistant" if message.role == "character" else message.role
         llama_message = [{"role": role, "content": message.content}]
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt', add_generation_prompt=True if idx == 0 else False)
-        if token_length + llama_message.shape[1] < (7200 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (6500 - system_prompt.shape[1]):
             llama.append(llama_message)
             token_length += llama_message.shape[1]
         else:
             break
     if config.environment_prompt != "":
         environment_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt', add_generation_prompt=False)
-        if token_length + llama_message.shape[1] < (7200 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (6500 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += llama_message.shape[1]
     llama.append(system_prompt)
@@ -312,9 +327,13 @@ async def edit_add_redobutton(message, content, character, user_message):
     #views cannot be crafted outside of an event loop
     await message.edit(content, view=RedoMessageButton(character=character, user_message=user_message))
 
-async def edit_add_editredobutton(hook, message, content, character, user_message, thread_id):
+async def edit_add_hookredobutton(hook, message, content, character, user_message, thread):
     #views cannot be crafted outside of an event loop
-    await hook.edit_message(content=content, message_id=message.id, thread=thread_id, view=EditAndRedoMessageButton(character=character, user_message=user_message))
+    await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditAndRedoMessageButton(character=character, user_message=user_message))
+
+async def edit_add_hookeditbutton(hook, message, content, character, user_message, thread):
+    #views cannot be crafted outside of an event loop
+    await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditMessageButton(character=character, user_message=user_message))
 
 async def get_webhook(channel):
     # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
@@ -332,7 +351,7 @@ async def get_webhook(channel):
 async def temp_edit(message_id, thread_id, content, channel_id):
     await hook_list[channel_id].edit_message(message_id=message_id, content=content, thread=thread_id)
 
-def message_updater(message, streamer, character, user_message, thread_id, channel):
+def message_updater(message, streamer, character, user_message, thread, channel):
     full_text = ""
     limiter = time.time()
     for text in streamer:
@@ -343,15 +362,31 @@ def message_updater(message, streamer, character, user_message, thread_id, chann
             if character.maw:
                 asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
             else:
-                asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread_id, full_text, channel.id), loop=client.loop)
+                asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread, full_text, channel.id), loop=client.loop)
+    global model_queue
     if character.maw:
-        asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message), loop=client.loop)
+        if not message.channel.id in [x.user_message.channel.id for x in model_queue[1:]]:
+            asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message),
+                                             loop=client.loop)
+        else:
+            asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
     else:
-        asyncio.run_coroutine_threadsafe(coro=edit_add_editredobutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
+        if not thread.id in [x.user_message.channel.id for x in model_queue[1:]]:
+            print("\n")
+            print(thread.id)
+            print([x.user_message.channel.id for x in model_queue[1:]])
+            asyncio.run_coroutine_threadsafe(
+                coro=edit_add_hookredobutton(hook_list[channel.id], message, full_text, character, user_message,
+                                             thread), loop=client.loop)
+        else:
+            asyncio.run_coroutine_threadsafe(
+                coro=edit_add_hookeditbutton(hook_list[channel.id], message, full_text, character, user_message,
+                                             thread), loop=client.loop)
 
 async def async_watcher():
     global all_tokens
     global all_time
+    global model_queue
     model = None
     tokenizer = AutoTokenizer.from_pretrained(
                 "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
@@ -377,11 +412,8 @@ async def async_watcher():
                 vram.allocate("Maw")
                 print("request sent")
                 async for i in vram.wait_for_allocation("Maw"):
-                    print(i)
                     if current_gen.character.maw:
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit("(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
-                    else:
-                        asyncio.run_coroutine_threadsafe(coro=temp_edit(current_gen.character_message.id, current_gen.character_message.channel.id, "(Waiting for " + str(i) + "before loading model.)", current_gen.character_message.channel.parent.id), loop=client.loop)
                 print("memory allocated, loading model")
                 model = AutoModelForCausalLM.from_pretrained(
                     "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
@@ -395,9 +427,9 @@ async def async_watcher():
             torch.cuda.empty_cache()
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-            if current_gen.character.maw: thread_id, channel = None, current_gen.character_message.channel
-            else: thread_id, channel = current_gen.user_message.channel, current_gen.user_message.channel.parent
-            streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character, current_gen.user_message, thread_id, channel])
+            if current_gen.character.maw: thread, channel = None, current_gen.character_message.channel
+            else: thread, channel = current_gen.user_message.channel, current_gen.user_message.channel.parent
+            streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character, current_gen.user_message, thread, channel])
             streamer_thread.start()
             start_time = time.time()
             response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer, eos_token_id=stop_token)
@@ -425,28 +457,28 @@ async def on_ready():
 @client.event
 async def on_message(message):
     global model_queue
+    global second_last_message
     global last_message
     maw_response = False
     character_response = False
     if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
     try:
-        last_message[message.guild.id]
-    except:
-        print("saving last message")
-        last_message[message.guild.id] = message
-    else:
-        if last_message[message.guild.id].author.id == client.user.id and message.author.id != client.user.id and last_message[message.guild.id].channel == message.channel and not r"\end" in message.content and not "/end" in message.content:
+        if last_message[message.channel.id].author.id == client.user.id and second_last_message[message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
             maw_response = True
+    except:
+        pass
     if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
         character_response = True
         maw_response = False
     if message.author.bot:
         character_response = False
         maw_response = False
-    if type(message.channel) == discord.Thread:
-        maw_response = False # too much weird stuff with how threads are handled right now
+    try:
+        second_last_message[message.channel.id] = last_message[message.channel.id]
+    except:
+        pass
+    last_message[message.channel.id] = message
     if maw_response:
-        last_message[message.guild.id] = message
         maw_message = await message.channel.send("...")
         old_message_id = None
         if os.path.isdir("./servers/" + str(message.guild.id)):
@@ -558,6 +590,17 @@ async def character(
     else:
         modal = CharacterModal(avatar)
         await interaction.response.send_modal(modal)
+
+
+
+@client.slash_command(description="Resets the context of Maw for the whole server (not including characters)")
+async def reset(
+        interaction: discord.Interaction,
+):
+    if os.path.isfile("./servers/" + str(interaction.guild.id) + "/history.txt") and os.path.isfile("./servers/" + str(interaction.guild.id) + "/ids.txt"):
+        await interaction.response.send_message("Are you sure? This will delete Maws memory in this server, not including characters.", view=ResetContextButton(history_path="./servers/" + str(interaction.guild.id) + "/history.txt", ids_path="./servers/" + str(interaction.guild.id) + "/ids.txt"))
+    else:
+        await interaction.response.send_message("No context found to clear.")
 
 threading.Thread(target=watcher).start()
 client.run(TOKEN)
