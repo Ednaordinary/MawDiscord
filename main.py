@@ -16,7 +16,7 @@ model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matchi
 
 model_queue = []
 hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
-last_user = {}
+second_last_message = {}
 last_message = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -217,6 +217,20 @@ class EditMessageButton(discord.ui.View):
         await interaction.response.pong()
         await interaction.message.delete()
 
+class ResetContextButton(discord.ui.View):
+    def __init__(self, *, timeout=None, history_path, ids_path):
+        super().__init__(timeout=timeout)
+        self.history_path = history_path
+        self.ids_path = ids_path
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.red)
+    async def reset_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if os.path.isfile(self.history_path) and os.path.isfile(self.ids_path):
+            await interaction.response.edit_message(content="Context deleted.", view=None)
+            os.remove(self.history_path)
+            os.remove(self.ids_path)
+        else:
+            await interaction.response.edit_message(content="No context found to delete.", view=None)
+
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
         self.content = content
@@ -317,6 +331,10 @@ async def edit_add_hookredobutton(hook, message, content, character, user_messag
     #views cannot be crafted outside of an event loop
     await hook.edit_message(content=content, message_id=message.id, thread=thread_id, view=EditAndRedoMessageButton(character=character, user_message=user_message))
 
+async def edit_add_hookeditbutton(hook, message, content, character, user_message, thread_id):
+    #views cannot be crafted outside of an event loop
+    await hook.edit_message(content=content, message_id=message.id, thread=thread_id, view=EditMessageButton(character=character, user_message=user_message))
+
 async def get_webhook(channel):
     # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
     try:
@@ -346,17 +364,18 @@ def message_updater(message, streamer, character, user_message, thread_id, chann
             else:
                 asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread_id, full_text, channel.id), loop=client.loop)
     global model_queue
-    if not message.channel in [x.user_message.channel for x in model_queue]:
+    if not message.channel in [x.user_message.channel for x in model_queue[1:]]:
+        print("adding redo button")
         if character.maw:
             asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message), loop=client.loop)
         else:
             asyncio.run_coroutine_threadsafe(coro=edit_add_hookredobutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
     else:
+        print("not adding redo button")
         if character.maw:
             asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
         else:
-            asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread_id, full_text, channel.id),
-                                             loop=client.loop)
+            asyncio.run_coroutine_threadsafe(coro=edit_add_hookeditbutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
 
 async def async_watcher():
     global all_tokens
@@ -432,21 +451,16 @@ async def on_ready():
 @client.event
 async def on_message(message):
     global model_queue
-    global last_user
+    global second_last_message
     global last_message
     maw_response = False
     character_response = False
     if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
     try:
-        last_user[message.channel.id]
+        if last_message[message.channel.id].author.id == client.user.id and second_last_message[message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
+            maw_response = True
     except:
         pass
-    else:
-        try:
-            if last_message[message.channel.id].author.id == message.author.id and not r"\end" in message.content and not "/end" in message.content:
-                maw_response = True
-        except:
-            pass
     if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
         character_response = True
         maw_response = False
@@ -455,10 +469,12 @@ async def on_message(message):
         maw_response = False
     if type(message.channel) == discord.Thread:
         maw_response = False # too much weird stuff with how threads are handled right now
-    if not message.author.bot:
-        last_message[message.channel.id] = message
+    try:
+        second_last_message[message.channel.id] = last_message[message.channel.id]
+    except:
+        pass
+    last_message[message.channel.id] = message
     if maw_response:
-        last_user[message.channel.id] = message
         maw_message = await message.channel.send("...")
         old_message_id = None
         if os.path.isdir("./servers/" + str(message.guild.id)):
@@ -570,6 +586,17 @@ async def character(
     else:
         modal = CharacterModal(avatar)
         await interaction.response.send_modal(modal)
+
+
+
+@client.slash_command(description="Resets the context of Maw for the whole server (not including characters)")
+async def reset(
+        interaction: discord.Interaction,
+):
+    if os.path.isfile("./servers/" + str(interaction.guild.id) + "/history.txt") and os.path.isfile("./servers/" + str(interaction.guild.id) + "/ids.txt"):
+        await interaction.response.send_message("Are you sure? This will delete Maws memory in this server, not including characters.", view=ResetContextButton(history_path="./servers/" + str(interaction.guild.id) + "/history.txt", ids_path="./servers/" + str(interaction.guild.id) + "/ids.txt"))
+    else:
+        await interaction.response.send_message("No context found to clear.")
 
 threading.Thread(target=watcher).start()
 client.run(TOKEN)
