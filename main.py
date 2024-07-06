@@ -327,13 +327,13 @@ async def edit_add_redobutton(message, content, character, user_message):
     #views cannot be crafted outside of an event loop
     await message.edit(content, view=RedoMessageButton(character=character, user_message=user_message))
 
-async def edit_add_hookredobutton(hook, message, content, character, user_message, thread_id):
+async def edit_add_hookredobutton(hook, message, content, character, user_message, thread):
     #views cannot be crafted outside of an event loop
-    await hook.edit_message(content=content, message_id=message.id, thread=thread_id, view=EditAndRedoMessageButton(character=character, user_message=user_message))
+    await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditAndRedoMessageButton(character=character, user_message=user_message))
 
-async def edit_add_hookeditbutton(hook, message, content, character, user_message, thread_id):
+async def edit_add_hookeditbutton(hook, message, content, character, user_message, thread):
     #views cannot be crafted outside of an event loop
-    await hook.edit_message(content=content, message_id=message.id, thread=thread_id, view=EditMessageButton(character=character, user_message=user_message))
+    await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditMessageButton(character=character, user_message=user_message))
 
 async def get_webhook(channel):
     # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
@@ -351,7 +351,7 @@ async def get_webhook(channel):
 async def temp_edit(message_id, thread_id, content, channel_id):
     await hook_list[channel_id].edit_message(message_id=message_id, content=content, thread=thread_id)
 
-def message_updater(message, streamer, character, user_message, thread_id, channel):
+def message_updater(message, streamer, character, user_message, thread, channel):
     full_text = ""
     limiter = time.time()
     for text in streamer:
@@ -362,20 +362,26 @@ def message_updater(message, streamer, character, user_message, thread_id, chann
             if character.maw:
                 asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
             else:
-                asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread_id, full_text, channel.id), loop=client.loop)
+                asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread, full_text, channel.id), loop=client.loop)
     global model_queue
-    if not message.channel in [x.user_message.channel for x in model_queue[1:]]:
-        print("adding redo button")
-        if character.maw:
-            asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message), loop=client.loop)
+    if character.maw:
+        if not message.channel.id in [x.user_message.channel.id for x in model_queue[1:]]:
+            asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message),
+                                             loop=client.loop)
         else:
-            asyncio.run_coroutine_threadsafe(coro=edit_add_hookredobutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
-    else:
-        print("not adding redo button")
-        if character.maw:
             asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
+    else:
+        if not thread.id in [x.user_message.channel.id for x in model_queue[1:]]:
+            print("\n")
+            print(thread.id)
+            print([x.user_message.channel.id for x in model_queue[1:]])
+            asyncio.run_coroutine_threadsafe(
+                coro=edit_add_hookredobutton(hook_list[channel.id], message, full_text, character, user_message,
+                                             thread), loop=client.loop)
         else:
-            asyncio.run_coroutine_threadsafe(coro=edit_add_hookeditbutton(hook_list[channel.id], message, full_text, character, user_message, thread_id), loop=client.loop)
+            asyncio.run_coroutine_threadsafe(
+                coro=edit_add_hookeditbutton(hook_list[channel.id], message, full_text, character, user_message,
+                                             thread), loop=client.loop)
 
 async def async_watcher():
     global all_tokens
@@ -421,9 +427,9 @@ async def async_watcher():
             torch.cuda.empty_cache()
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-            if current_gen.character.maw: thread_id, channel = None, current_gen.character_message.channel
-            else: thread_id, channel = current_gen.user_message.channel, current_gen.user_message.channel.parent
-            streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character, current_gen.user_message, thread_id, channel])
+            if current_gen.character.maw: thread, channel = None, current_gen.character_message.channel
+            else: thread, channel = current_gen.user_message.channel, current_gen.user_message.channel.parent
+            streamer_thread = threading.Thread(target=message_updater, args=[current_gen.character_message, streamer, current_gen.character, current_gen.user_message, thread, channel])
             streamer_thread.start()
             start_time = time.time()
             response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer, eos_token_id=stop_token)
@@ -467,8 +473,6 @@ async def on_message(message):
     if message.author.bot:
         character_response = False
         maw_response = False
-    if type(message.channel) == discord.Thread:
-        maw_response = False # too much weird stuff with how threads are handled right now
     try:
         second_last_message[message.channel.id] = last_message[message.channel.id]
     except:
