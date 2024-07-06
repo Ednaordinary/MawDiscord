@@ -17,6 +17,7 @@ model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matchi
 model_queue = []
 hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
 last_user = {}
+last_message = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
@@ -432,6 +433,7 @@ async def on_ready():
 async def on_message(message):
     global model_queue
     global last_user
+    global last_message
     maw_response = False
     character_response = False
     if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
@@ -440,8 +442,11 @@ async def on_message(message):
     except:
         pass
     else:
-        if last_user[message.channel.id] == message.author.id and not r"\end" in message.content and not "/end" in message.content:
-            maw_response = True
+        try:
+            if last_message[message.channel.id].author.id == message.author.id and not r"\end" in message.content and not "/end" in message.content:
+                maw_response = True
+        except:
+            pass
     if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
         character_response = True
         maw_response = False
@@ -450,8 +455,10 @@ async def on_message(message):
         maw_response = False
     if type(message.channel) == discord.Thread:
         maw_response = False # too much weird stuff with how threads are handled right now
-    last_user[message.channel.id] = message.author.id
+    if not message.author.bot:
+        last_message[message.channel.id] = message
     if maw_response:
+        last_user[message.channel.id] = message
         maw_message = await message.channel.send("...")
         old_message_id = None
         if os.path.isdir("./servers/" + str(message.guild.id)):
