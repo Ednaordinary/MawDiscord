@@ -5,3 +5,8 @@ python-dotenv
 torch
 setuptools
 flash_attn
+tiktoken
+transformer_lens
+jaxtyping
+scikit-learn
+colorama

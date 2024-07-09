@@ -12,7 +12,7 @@ import asyncio
 from typing import Optional
 import vram
 
-model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matching_ngram_size=2, prompt_lookup_num_tokens=15) # PR isnt merged but including in readme
+model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matching_ngram_size=2, prompt_lookup_num_tokens=15, repetition_penalty=1.2) # PR isnt merged but including in readme
 
 model_queue = []
 hook_list = {} # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -389,7 +389,8 @@ async def async_watcher():
     global model_queue
     model = None
     tokenizer = AutoTokenizer.from_pretrained(
-                "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                "meta-llama/Meta-Llama-3-8B-Instruct"
             ) # can just be kept loaded
     stop_token = tokenizer.encode("<|eot_id|>")
     while True:
@@ -416,7 +417,9 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit("(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
                 model = AutoModelForCausalLM.from_pretrained(
-                    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                #    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                    "cogvlm-abliterated",
+                    local_files_only=True,
                     device_map="auto",
                     torch_dtype=torch.bfloat16,
                     low_cpu_mem_usage=True,
