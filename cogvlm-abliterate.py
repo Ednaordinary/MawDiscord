@@ -55,9 +55,12 @@ if os.path.exists("meta-llama"):
     MODEL_PATH = 'meta-llama/Meta-Llama-3-8B-Instruct'
     model = HookedTransformer.from_pretrained_no_processing(
         MODEL_PATH,
-         local_files_only=True,
+        local_files_only=True,
         dtype=torch.bfloat16,
-        default_padding_side='left'
+        default_padding_side='left',
+        #attn_implementation="flash_attention_2",
+        #low_cpu_mem_usage=True,
+        device_map="cpu",
     )
 
     model.tokenizer.padding_side = 'left'
@@ -66,98 +69,103 @@ if os.path.exists("meta-llama"):
 else:
     raise FileNotFoundError("Please place the model in a folder called 'meta-lama/Meta-Llama-3-8B-Intruct'")
 
-#def tokenize_instructions_chat(
-#    tokenizer: AutoTokenizer,
-#    instructions: List[str]
-#) -> Int[Tensor, 'batch_size seq_len']:
-#    prompts = [CHAT_TEMPLATE.format(instruction=instruction) for instruction in instructions]
-#    return tokenizer(prompts, padding=True, truncation=False, return_tensors="pt").input_ids
-
-def _history_to_prompt(signal_type, history, query):
-    if signal_type == 'base':
-        return query
-    elif signal_type == 'vqa':
-        answer_format = 'Short answer:'
-    elif signal_type == 'chat':
-        answer_format = 'Answer:'
-    else:
-        assert False, f"Unknown signal type {signal_type}"
-
-    prompt = ''
-    for i, (old_query, response) in enumerate(history):
-        prompt += 'Question: ' + old_query + " {} ".format(answer_format) + response + "\n"
-    prompt += 'Question: {} {}'.format(query, answer_format)
-    return prompt
-
-def build_conversation_input_ids(
-        tokenizer: "PreTrainedTokenizer",
-        query: str,
-        history: Optional[List[Tuple[str, str]]] = None,
-        images: Optional[List["PIL.Image"]] = None,
-        template_version: Optional[Literal["base", "chat", "vqa"]] = None,
-        answer: str = None,
-):
-    image_size: int = 1344
-    patch_size: int = 14
-    template_version = template_version or "base"
-    assert images is None or len(images) <= 1, f"not support multi images by now."
-    history = history or []
-    text = _history_to_prompt(template_version, history, query)
-    input_ids = [tokenizer.bos_token_id]
-    token_type_ids = [0]
-    if images is not None and len(images) == 1:
-        # vision
-        transform = transforms.Compose(
-            [
-                transforms.Resize(
-                    (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
-                ),
-                transforms.ToTensor(),
-                transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
-            ]
-        )
-        images = [transform(images[0])]
-        # language
-        vision_token_num = (image_size // patch_size // 2) * (image_size // patch_size // 2) + 2
-
-        tokenizer.pad_token_id = 128002  # llama3 adapt for cogvlm
-
-        input_ids += [tokenizer.pad_token_id] * vision_token_num
-        token_type_ids += [1] * vision_token_num
-    text_ids = tokenizer.encode(text, add_special_tokens=False)
-
-    if answer is not None:
-        answer_ids = tokenizer.encode(answer, add_special_tokens=False)
-        answer_ids += [tokenizer.eos_token_id]
-        text_ids += answer_ids
-
-    input_ids += text_ids
-    token_type_ids += [0] * len(text_ids)
-    attention_mask = [1] * len(input_ids)
-    if answer is not None:
-        labels = [-100 for _ in range(len(input_ids) - len(answer_ids))] + answer_ids
-        labels = torch.tensor(labels, dtype=torch.long)
-    else:
-        labels = None
-
-    return {
-        'input_ids': torch.tensor(input_ids, dtype=torch.long),
-        'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long),
-        'attention_mask': torch.tensor(attention_mask, dtype=torch.long),
-        'images': images,
-        'labels': labels,
-    }
-
 def tokenize_instructions_chat(
-        tokenizer: AutoTokenizer,
-        instructions: List[str]
+    tokenizer: PreTrainedTokenizer,
+    instructions: List[str]
 ) -> Int[Tensor, 'batch_size seq_len']:
     prompts = [CHAT_TEMPLATE.format(instruction=instruction) for instruction in instructions]
-    print(prompts)
-    input_ids_prompts = []
+    #prompts = [prompt for prompt in prompts if isinstance(prompt, str)]
+    prompts_encoded = []
     for prompt in prompts:
-        input_ids_prompts.append(build_conversation_input_ids(tokenizer=tokenizer, query=prompt, history=[], template_version='base'))
-    return input_ids_prompts
+        prompts_encoded.append(tokenizer.encode(prompts, padding=True, truncation=False, return_tensors="pt", is_split_into_words=True))
+    print(len(prompts_encoded))
+    return torch.stack(prompts_encoded)
+
+# def _history_to_prompt(signal_type, history, query):
+#     if signal_type == 'base':
+#         return query
+#     elif signal_type == 'vqa':
+#         answer_format = 'Short answer:'
+#     elif signal_type == 'chat':
+#         answer_format = 'Answer:'
+#     else:
+#         assert False, f"Unknown signal type {signal_type}"
+#
+#     prompt = ''
+#     for i, (old_query, response) in enumerate(history):
+#         prompt += 'Question: ' + old_query + " {} ".format(answer_format) + response + "\n"
+#     prompt += 'Question: {} {}'.format(query, answer_format)
+#     return prompt
+#
+# def build_conversation_input_ids(
+#         tokenizer: "PreTrainedTokenizer",
+#         query: str,
+#         history: Optional[List[Tuple[str, str]]] = None,
+#         images: Optional[List["PIL.Image"]] = None,
+#         template_version: Optional[Literal["base", "chat", "vqa"]] = None,
+#         answer: str = None,
+# ):
+#     image_size: int = 1344
+#     patch_size: int = 14
+#     template_version = template_version or "base"
+#     assert images is None or len(images) <= 1, f"not support multi images by now."
+#     history = history or []
+#     text = _history_to_prompt(template_version, history, query)
+#     input_ids = [tokenizer.bos_token_id]
+#     token_type_ids = [0]
+#     if images is not None and len(images) == 1:
+#         # vision
+#         transform = transforms.Compose(
+#             [
+#                 transforms.Resize(
+#                     (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
+#                 ),
+#                 transforms.ToTensor(),
+#                 transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+#             ]
+#         )
+#         images = [transform(images[0])]
+#         # language
+#         vision_token_num = (image_size // patch_size // 2) * (image_size // patch_size // 2) + 2
+#
+#         tokenizer.pad_token_id = 128002  # llama3 adapt for cogvlm
+#
+#         input_ids += [tokenizer.pad_token_id] * vision_token_num
+#         token_type_ids += [1] * vision_token_num
+#     text_ids = tokenizer.encode(text, add_special_tokens=False)
+#
+#     if answer is not None:
+#         answer_ids = tokenizer.encode(answer, add_special_tokens=False)
+#         answer_ids += [tokenizer.eos_token_id]
+#         text_ids += answer_ids
+#
+#     input_ids += text_ids
+#     token_type_ids += [0] * len(text_ids)
+#     attention_mask = [1] * len(input_ids)
+#     if answer is not None:
+#         labels = [-100 for _ in range(len(input_ids) - len(answer_ids))] + answer_ids
+#         labels = torch.tensor(labels, dtype=torch.long)
+#     else:
+#         labels = None
+#
+#     return {
+#         'input_ids': torch.tensor(input_ids, dtype=torch.long),
+#         'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long),
+#         'attention_mask': torch.tensor(attention_mask, dtype=torch.long),
+#         'images': images,
+#         'labels': labels,
+#     }
+#
+# def tokenize_instructions_chat(
+#         tokenizer: AutoTokenizer,
+#         instructions: List[str]
+# ) -> Int[Tensor, 'batch_size seq_len']:
+#     prompts = [CHAT_TEMPLATE.format(instruction=instruction) for instruction in instructions]
+#     print(prompts)
+#     input_ids_prompts = []
+#     for prompt in prompts:
+#         input_ids_prompts.append(build_conversation_input_ids(tokenizer=tokenizer, query=prompt, history=[], template_version='base'))
+#     return input_ids_prompts
 
 
 tokenize_instructions_fn = functools.partial(tokenize_instructions_chat, tokenizer=model.tokenizer)
@@ -214,13 +222,15 @@ harmful = {}
 harmless = {}
 
 # may want to spare your RAM and cycles here. can use '32' here instead or something like the paper
-N_INST_TRAIN = min(len(harmful_inst_train), len(harmless_inst_train))
+#N_INST_TRAIN = min(len(harmful_inst_train), len(harmless_inst_train))
+N_INST_TRAIN = 390
 
 # load the full training set here to align all the dimensions
 toks = tokenize_instructions_fn(instructions=harmful_inst_train[:N_INST_TRAIN] + harmless_inst_train[:N_INST_TRAIN])
+print(N_INST_TRAIN)
 harmful_toks, harmless_toks = toks.split(N_INST_TRAIN)
 
-batch_size = 48  # adjust this based on available VRAM
+batch_size = 48 # adjust this based on available VRAM
 
 for i in tqdm(range(0, N_INST_TRAIN // batch_size + (N_INST_TRAIN % batch_size > 0))):
     id = i * batch_size
