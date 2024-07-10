@@ -417,8 +417,8 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit("(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
                 model = AutoModelForCausalLM.from_pretrained(
-                #    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-                    "cogvlm-abliterated",
+                    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                    #"cogvlm-abliterated",
                     local_files_only=True,
                     device_map="auto",
                     torch_dtype=torch.bfloat16,

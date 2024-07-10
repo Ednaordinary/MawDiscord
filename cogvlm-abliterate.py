@@ -223,18 +223,19 @@ harmless = {}
 
 # may want to spare your RAM and cycles here. can use '32' here instead or something like the paper
 #N_INST_TRAIN = min(len(harmful_inst_train), len(harmless_inst_train))
-N_INST_TRAIN = 390
+N_INST_TRAIN = 150
 
 # load the full training set here to align all the dimensions
 toks = tokenize_instructions_fn(instructions=harmful_inst_train[:N_INST_TRAIN] + harmless_inst_train[:N_INST_TRAIN])
 print(N_INST_TRAIN)
 harmful_toks, harmless_toks = toks.split(N_INST_TRAIN)
 
-batch_size = 48 # adjust this based on available VRAM
+batch_size = 12 # adjust this based on available VRAM
 
 for i in tqdm(range(0, N_INST_TRAIN // batch_size + (N_INST_TRAIN % batch_size > 0))):
     id = i * batch_size
-    e = min(N_INST_TRAIN, id + batch_size)
+    #e = min(N_INST_TRAIN, id + batch_size)
+    e = id + batch_size
 
     # run the models on harmful and harmless prompts, cache their activations separately.
     harmful_logits, harmful_cache = model.run_with_cache(harmful_toks[id:e],
