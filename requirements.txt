@@ -10,3 +10,6 @@ transformer_lens
 jaxtyping
 scikit-learn
 colorama
+torchvision
+triton
+xformers
