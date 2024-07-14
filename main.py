@@ -25,6 +25,7 @@ client = discord.Client(intents=intents)
 all_tokens = 0
 all_time = 0
 
+# this class is only used by characters
 class CharacterModal(discord.ui.Modal):
     def __init__(self, avatar):
         super().__init__(
@@ -116,6 +117,7 @@ class CharacterModal(discord.ui.Modal):
             if history:
                 character.write_history(history)
 
+# this class is only used by characters
 class EditMessageModal(discord.ui.Modal):
     def __init__(self, original_content, character, user_message):
         super().__init__(
@@ -151,6 +153,7 @@ class EditMessageModal(discord.ui.Modal):
                 view = EditMessageButton(character=self.character, user_message=self.user_message)
             await interaction.response.edit_message(content=self.content.value, view=view)
 
+# this class is only used by characters
 class EditSystemPromptModal(discord.ui.Modal):
     def __init__(self, current_prompt, config, thread):
         super().__init__(title="Edit system prompt", timeout=60*60*24)
@@ -172,6 +175,7 @@ class EditSystemPromptModal(discord.ui.Modal):
         make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(self.thread.id), config)
         await interaction.message.edit(str(self.new_prompt[:1900]) + "\n**Do not delete this message or the character will stop working**")
 
+# this class is only used by character root messages
 class RootMessageActionsLocked(discord.ui.view):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
@@ -203,13 +207,19 @@ class RootMessageActionsLocked(discord.ui.view):
                 make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id), config)
                 await interaction.response.edit_message(view=RootMessageActionsUnlocked())
 
+# this class is only used by character root messages
 class RootMessageActionsUnlocked(discord.ui.view):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
     @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary)
     async def edit_prompt(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_modal(EditSystemPromptModal(config.system_prompt, config, interaction.message.thread))
-    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.primary)
+        try:
+            config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
+            await interaction.response.send_modal(EditSystemPromptModal(config.system_prompt, config, interaction.message.thread))
+        except Exception as e:
+            print(repr(e))
+            await interaction.response.pong()
+    @discord.ui.button(label="Lock", style=discord.ButtonStyle.primary)
     async def lock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         try:
             config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
@@ -217,13 +227,14 @@ class RootMessageActionsUnlocked(discord.ui.view):
             print(repr(e))
             await interaction.response.pong()
         else:
-            if config.locked_id != 0 and interaction.user.id != config.locked_id:
+            if config.original_user_id != 0 and interaction.user.id != config.original_user_id:
                 await interaction.response.pong()
             else:
-                config.locked_id = 0
+                config.locked_id = config.original_user_id
                 make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id), config)
                 await interaction.response.edit_message(view=RootMessageActionsLocked())
 
+# this class is only used by maw
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *,timeout=None, character, user_message):
         super().__init__(timeout=timeout)
@@ -238,6 +249,7 @@ class RedoMessageButton(discord.ui.View):
         except: pass
         model_queue.append(CharacterGen(self.user_message, interaction.message, self.character))
 
+# this class is only used by characters
 class EditAndRedoMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None, character, user_message):
         super().__init__(timeout=timeout)
@@ -245,33 +257,47 @@ class EditAndRedoMessageButton(discord.ui.View):
         self.user_message = user_message
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary)
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_modal(EditMessageModal(interaction.message.content, self.character, self.user_message))
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
+        if config.locked_id != 0 and config.locked_id != interaction.user.id:
+            await interaction.response.pong()
+        else:
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, self.character, self.user_message))
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary)
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="...")
-        history = self.character.read_history()
-        try:
-            self.character.write_history(history[:-2])
-        except: pass
-        model_queue.append(CharacterGen(self.user_message, interaction.message, self.character))
+        # redo button should NOT be persistent until a check for the last message is added
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
+        if config.locked_id != 0 and config.locked_id != interaction.user.id:
+            await interaction.response.pong()
+        else:
+            await interaction.response.edit_message(content="...")
+            history = self.character.read_history()
+            try:
+                self.character.write_history(history[:-2])
+            except: pass
+            model_queue.append(CharacterGen(self.user_message, interaction.message, self.character))
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary)
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         #Only characters use this class so delete is here
-        history = self.character.read_history()
-        message_idx = None
-        for idx, message in enumerate(history):
-            if int(message.message_id) == interaction.message.id:
-                message_idx = idx
-        if message_idx != None:
-            history.pop(idx)
-        self.character.write_history(history)
-        await interaction.response.pong()
-        try:
-            await interaction.message.delete()
-        except:
-            hook = get_webhook(interaction.channel.parent)
-            hook.delete_message(message_id=interaction.message.id)
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
+        if config.locked_id != 0 and config.locked_id != interaction.user.id:
+            await interaction.response.pong()
+        else:
+            history = self.character.read_history()
+            message_idx = None
+            for idx, message in enumerate(history):
+                if int(message.message_id) == interaction.message.id:
+                    message_idx = idx
+            if message_idx != None:
+                history.pop(idx)
+            self.character.write_history(history)
+            await interaction.response.pong()
+            try:
+                await interaction.message.delete()
+            except:
+                hook = get_webhook(interaction.channel.parent)
+                hook.delete_message(message_id=interaction.message.id)
 
+# this class is only used by characters
 class EditMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None, character, user_message):
         super().__init__(timeout=timeout)
@@ -279,25 +305,34 @@ class EditMessageButton(discord.ui.View):
         self.user_message = user_message
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary)
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_modal(EditMessageModal(interaction.message.content, self.character, self.user_message))
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
+        if config.locked_id != 0 and config.locked_id != interaction.user.id:
+            await interaction.response.pong()
+        else:
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, self.character, self.user_message))
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary)
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         #Only characters use this class so delete is here
-        history = self.character.read_history()
-        message_idx = None
-        for idx, message in enumerate(history):
-            if int(message.message_id) == interaction.message.id:
-                message_idx = idx 
-        if message_idx != None:
-            history.pop(idx)
-        self.character.write_history(history)
-        await interaction.response.pong()
-        try:
-            await interaction.message.delete()
-        except:
-            hook = get_webhook(interaction.channel.parent)
-            hook.delete_message(message_id=interaction.message.id)
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
+        if config.locked_id != 0 and config.locked_id != interaction.user.id:
+            await interaction.response.pong()
+        else:
+            history = self.character.read_history()
+            message_idx = None
+            for idx, message in enumerate(history):
+                if int(message.message_id) == interaction.message.id:
+                    message_idx = idx
+            if message_idx != None:
+                history.pop(idx)
+            self.character.write_history(history)
+            await interaction.response.pong()
+            try:
+                await interaction.message.delete()
+            except:
+                hook = get_webhook(interaction.channel.parent)
+                hook.delete_message(message_id=interaction.message.id)
 
+# this class is only used by maw
 class ResetContextButton(discord.ui.View):
     def __init__(self, *, timeout=None, history_path, ids_path):
         super().__init__(timeout=timeout)
