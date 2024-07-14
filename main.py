@@ -190,7 +190,39 @@ class RootMessageActionsLocked(discord.ui.view):
 
     @discord.ui.button(label="Unlock", style=discord.ButtonStyle.primary)
     async def lock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        try:
+            config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
+        except Exception as e: # something is wrong somewhere, possibly the thread was deleted
+            print(repr(e))
+            await interaction.response.pong()
+        else:
+            if config.locked_id != 0 and interaction.user.id != config.locked_id:
+                await interaction.response.pong()
+            else:
+                config.locked_id = 0
+                make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id), config)
+                await interaction.response.edit_message(view=RootMessageActionsUnlocked())
 
+class RootMessageActionsUnlocked(discord.ui.view):
+    def __init__(self, *, timeout=None):
+        super().__init__(timeout=timeout)
+    @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary)
+    async def edit_prompt(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(EditSystemPromptModal(config.system_prompt, config, interaction.message.thread))
+    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.primary)
+    async def lock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        try:
+            config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
+        except Exception as e: # something is wrong somewhere, possibly the thread was deleted
+            print(repr(e))
+            await interaction.response.pong()
+        else:
+            if config.locked_id != 0 and interaction.user.id != config.locked_id:
+                await interaction.response.pong()
+            else:
+                config.locked_id = 0
+                make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id), config)
+                await interaction.response.edit_message(view=RootMessageActionsLocked())
 
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *,timeout=None, character, user_message):
@@ -339,7 +371,10 @@ def make_maw_character(path, config):
         config_file.write(str(config.environment_prompt.replace("\n", r"\\n")) + "\n")
         config_file.write(str(config.name.replace("\n", r"\\n")) + "\n")
         if config.avatar: config_file.write(str(config.avatar) + "\n")
-
+    with open(path + "/locked.txt", "w") as locked_id:
+        locked_id.write(str(config.locked_id))
+    with open(path + "/original.txt", "w") as original_id:
+        original_id.write(str(config.original_user_id))
 
 
 def read_config(path):
@@ -349,13 +384,20 @@ def read_config(path):
         with open(path+"/locked.txt", "r") as locked_id:
             locked_id = int(locked_id.readlines()[0])
     except:
-        locked_id = 0
         with open(path+"/locked.txt", "w") as locked_id:
             locked_id.write("0")
+        locked_id = 0
+    try:
+        with open(path+"/locked.txt", "r") as original_id:
+            original_id = int(original_id.readlines()[0])
+    except:
+        with open(path+"/original.txt", "w") as original_id:
+            original_id.write("0")
+        original_id = 0
     if len(lines) > 4:
-        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], lines[4], locked_id)
+        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], lines[4], locked_id, original_id)
     else:
-        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], None, locked_id)
+        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], None, locked_id, original_id)
 
 def history_to_llama(history, tokenizer, config):
     llama = []
