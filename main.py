@@ -151,6 +151,13 @@ class EditMessageModal(discord.ui.Modal):
                 view = EditMessageButton(character=self.character, user_message=self.user_message)
             await interaction.response.edit_message(content=self.content.value, view=view)
 
+class RootMessageActionsLocked(discord.ui.view):
+    def __init__(self, *, timeout=None):
+        super().__init__(timeout=timeout)
+    @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary)
+    async def edit_prompt(self, button: discord.ui.Button, interaction: discord.Interaction):
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.))
+
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *,timeout=None, character, user_message):
         super().__init__(timeout=timeout)
@@ -193,7 +200,11 @@ class EditAndRedoMessageButton(discord.ui.View):
             history.pop(idx)
         self.character.write_history(history)
         await interaction.response.pong()
-        await interaction.message.delete()
+        try:
+            await interaction.message.delete()
+        except:
+            hook = get_webhook(interaction.channel.parent)
+            hook.delete_message(message_id=interaction.message.id)
 
 class EditMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None, character, user_message):
@@ -215,7 +226,11 @@ class EditMessageButton(discord.ui.View):
             history.pop(idx)
         self.character.write_history(history)
         await interaction.response.pong()
-        await interaction.message.delete()
+        try:
+            await interaction.message.delete()
+        except:
+            hook = get_webhook(interaction.channel.parent)
+            hook.delete_message(message_id=interaction.message.id)
 
 class ResetContextButton(discord.ui.View):
     def __init__(self, *, timeout=None, history_path, ids_path):
@@ -238,7 +253,7 @@ class MawCharacterMessage:
         self.role = role
 
 class MawCharacterConfig:
-    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path, name, avatar):
+    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path, name, avatar, locked_id):
         self.system_prompt = system_prompt
         self.environment_prompt = environment_prompt
         self.thread_id = thread_id
@@ -246,6 +261,7 @@ class MawCharacterConfig:
         self.history_path = history_path
         self.name = name
         self.avatar = avatar
+        self.locked_id = locked_id
 
 class MawCharacter:
     def __init__(self, name, config, maw):
@@ -292,10 +308,17 @@ def make_maw_character(path, config):
 def read_config(path):
     with open(path + "/config.txt", "r") as config_file:
         lines = config_file.readlines()
+    try:
+        with open(path+"/locked.txt", "r") as locked_id:
+            locked_id = int(locked_id.readlines()[0])
+    except:
+        locked_id = 0
+        with open(path+"/locked.txt", "w") as locked_id:
+            locked_id.write("0")
     if len(lines) > 4:
-        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], lines[4])
+        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], lines[4], locked_id)
     else:
-        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], None)
+        return MawCharacterConfig(lines[1].replace(r"\\n", "\n"), lines[2].replace(r"\\n", "\n"), int(lines[0]), path + "/ids.txt", path + "/history.txt", lines[3], None, locked_id)
 
 def history_to_llama(history, tokenizer, config):
     llama = []
@@ -495,7 +518,7 @@ async def on_message(message):
                     pass
         else:
             system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna."
-            config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None)
+            config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None, 0)
             make_maw_character("./servers/" + str(message.guild.id), config)
             character = MawCharacter("Maw", config, True)
         model_queue.append(CharacterGen(message, maw_message, character))
@@ -586,6 +609,11 @@ async def character(
             name="avatar",
             required=False,
             description="An avatar for your character. Must be jpg or png",
+        ),
+        locked: Optional[bool] = discord.SlashOption(
+            name="locked",
+            required=False,
+            description="Locks a session to only the current user.",
         ),
 ):
     if avatar and not avatar.content_type == "image/jpeg" and not avatar.content_type == "image/png":
