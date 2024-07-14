@@ -151,12 +151,46 @@ class EditMessageModal(discord.ui.Modal):
                 view = EditMessageButton(character=self.character, user_message=self.user_message)
             await interaction.response.edit_message(content=self.content.value, view=view)
 
+class EditSystemPromptModal(discord.ui.Modal):
+    def __init__(self, current_prompt, config, thread):
+        super().__init__(title="Edit system prompt", timeout=60*60*24)
+        self.new_prompt = discord.ui.TextInput(
+            label="Prompt",
+            style=discord.TextInputStyle.paragraph,
+            placeholder="New system prompt",
+            default_value=current_prompt,
+            required=True,
+            min_length=30,
+            max_length=4150,
+        )
+        self.add_item(self.new_prompt)
+        self.config = config
+        self.thread = thread
+    async def callback(self, interaction: discord.Interaction) -> None:
+        config = self.config
+        config.system_prompt = self.new_prompt.value
+        make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(self.thread.id), config)
+        await interaction.message.edit(str(self.new_prompt[:1900]) + "\n**Do not delete this message or the character will stop working**")
+
 class RootMessageActionsLocked(discord.ui.view):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
     @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary)
     async def edit_prompt(self, button: discord.ui.Button, interaction: discord.Interaction):
-        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.))
+        try:
+            config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
+        except Exception as e: # something is wrong somewhere, possibly the thread was deleted
+            print(repr(e))
+            await interaction.response.pong()
+        else:
+            if config.locked_id != 0 and interaction.user.id != config.locked_id:
+                await interaction.response.pong()
+            else:
+                await interaction.response.send_modal(EditSystemPromptModal(config.system_prompt, config, interaction.message.thread))
+
+    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.primary)
+    async def lock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+
 
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *,timeout=None, character, user_message):
@@ -253,7 +287,7 @@ class MawCharacterMessage:
         self.role = role
 
 class MawCharacterConfig:
-    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path, name, avatar, locked_id):
+    def __init__(self, system_prompt, environment_prompt, thread_id, ids_path, history_path, name, avatar, locked_id, original_user_id):
         self.system_prompt = system_prompt
         self.environment_prompt = environment_prompt
         self.thread_id = thread_id
@@ -262,6 +296,7 @@ class MawCharacterConfig:
         self.name = name
         self.avatar = avatar
         self.locked_id = locked_id
+        self.original_user_id = original_user_id
 
 class MawCharacter:
     def __init__(self, name, config, maw):
@@ -304,6 +339,8 @@ def make_maw_character(path, config):
         config_file.write(str(config.environment_prompt.replace("\n", r"\\n")) + "\n")
         config_file.write(str(config.name.replace("\n", r"\\n")) + "\n")
         if config.avatar: config_file.write(str(config.avatar) + "\n")
+
+
 
 def read_config(path):
     with open(path + "/config.txt", "r") as config_file:
