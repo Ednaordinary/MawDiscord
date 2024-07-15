@@ -195,7 +195,7 @@ class RootMessageActionsLocked(discord.ui.View):
                 await interaction.response.send_modal(EditSystemPromptModal(config.system_prompt, config, interaction.message.thread))
 
     @discord.ui.button(label="Unlock", style=discord.ButtonStyle.primary, custom_id="unlock")
-    async def lock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def unlock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         try:
             config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
         except Exception as e: # something is wrong somewhere, possibly the thread was deleted
@@ -296,8 +296,9 @@ class EditAndRedoMessageButton(discord.ui.View):
             try:
                 await interaction.message.delete()
             except:
-                hook = get_webhook(interaction.channel.parent)
-                hook.delete_message(message_id=interaction.message.id)
+                # still kinda doesn't work but like I try
+                hook = hook_list[interaction.channel.parent.id]
+                await hook.delete_message(interaction.message.id)
 
 # this class is only used by characters
 class EditMessageButton(discord.ui.View):
@@ -331,8 +332,9 @@ class EditMessageButton(discord.ui.View):
             try:
                 await interaction.message.delete()
             except:
-                hook = get_webhook(interaction.channel.parent)
-                hook.delete_message(message_id=interaction.message.id)
+                # still kinda doesn't work but like I try
+                hook = hook_list[interaction.channel.parent.id]
+                await hook.delete_message(interaction.message.id)
 
 # this class is only used by maw
 class ResetContextButton(discord.ui.View):
@@ -408,6 +410,8 @@ def make_maw_character(path, config):
         config_file.write(str(config.environment_prompt.replace("\n", r"\\n")) + "\n")
         config_file.write(str(config.name.replace("\n", r"\\n")) + "\n")
         if config.avatar: config_file.write(str(config.avatar) + "\n")
+    print(config.locked_id)
+    print(config.original_user_id)
     with open(path + "/locked.txt", "w") as locked_id:
         locked_id.write(str(config.locked_id))
     with open(path + "/original.txt", "w") as original_id:
@@ -416,7 +420,7 @@ def make_maw_character(path, config):
 
 def read_config(path):
     with open(path + "/config.txt", "r") as config_file:
-        lines = config_file.readlines()
+        lines = [x[:-1] if x[-1] == "\n" else x for x in config_file.readlines()] # remove new lines
     try:
         with open(path+"/locked.txt", "r") as locked_id:
             locked_id = int(locked_id.readlines()[0])
@@ -425,7 +429,7 @@ def read_config(path):
             locked_id.write("0")
         locked_id = 0
     try:
-        with open(path+"/locked.txt", "r") as original_id:
+        with open(path+"/original.txt", "r") as original_id:
             original_id = int(original_id.readlines()[0])
     except:
         with open(path+"/original.txt", "w") as original_id:
