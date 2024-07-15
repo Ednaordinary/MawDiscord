@@ -78,7 +78,7 @@ class CharacterModal(discord.ui.Modal):
         if self.description.value[-1] != ".": description = self.description.value + "."
         else: description = self.description.value
         prompt = "Your name is " + self.name.value + ". " + description + " To do an action, you surround actions in stars *like this*. You surround your dialogue in quotes " + '"like this"' + ". The person you are talking to may do the same with stars and quotes."
-        response = prompt + " " + self.environment.value
+        response = prompt
         cut_value = 1900
         if len(response) > cut_value: response = response[:cut_value] + "(cont.)"
         else: response = response
@@ -101,6 +101,7 @@ class CharacterModal(discord.ui.Modal):
             await root.edit("Thread could not be created (are you already in one?)")
         else:
             await thread.join()
+            await thread.send(self.environment.value)
             locked_id = interaction.user.id if self.locked else 0
             if self.avatar:
                 config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value, root.attachments[0].url, locked_id=locked_id, original_user_id=interaction.user.id)
@@ -176,6 +177,11 @@ class EditSystemPromptModal(discord.ui.Modal):
         config.system_prompt = self.new_prompt.value
         make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(self.thread.id), config)
         await interaction.message.edit(str(self.new_prompt.value)[:1900] + "\n**Do not delete this message or the character will stop working**")
+
+class EditEnvironmentButton(discord.ui.Button):
+    def __init__(self, *, timeout=None):
+        super().__init__(timeout=None)
+
 
 # this class is only used by character root messages
 class RootMessageActionsLocked(discord.ui.View):
