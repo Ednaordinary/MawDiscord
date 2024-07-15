@@ -157,6 +157,28 @@ class EditMessageModal(discord.ui.Modal):
             await interaction.response.edit_message(content=self.content.value, view=view)
 
 # this class is only used by characters
+class EditEnvironmentModal(discord.ui.Modal):
+    def __init__(self, current_prompt, config, thread):
+        super().__init__(title="Edit environment", timeout=60*60*24)
+        self.new_environment = discord.ui.TextInput(
+            label="Environment",
+            style=discord.TextInputStyle.paragraph,
+            placeholder="New environment",
+            default_value=current_prompt,
+            required=True,
+            min_length=1,
+            max_length=2000
+        )
+        self.add_item(self.new_environment)
+        self.config = config
+        self.thread = thread
+    async def callback(self, interaction: discord.Interaction) -> None:
+        config = self.config
+        config.environment_prompt = self.new_environment.value
+        make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(self.thread.id), config)
+        await interaction.response.edit_message(self.new_environment.value)
+
+# this class is only used by characters
 class EditSystemPromptModal(discord.ui.Modal):
     def __init__(self, current_prompt, config, thread):
         super().__init__(title="Edit system prompt", timeout=60*60*24)
@@ -176,12 +198,24 @@ class EditSystemPromptModal(discord.ui.Modal):
         config = self.config
         config.system_prompt = self.new_prompt.value
         make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(self.thread.id), config)
-        await interaction.message.edit(str(self.new_prompt.value)[:1900] + "\n**Do not delete this message or the character will stop working**")
+        await interaction.response.edit_message(str(self.new_prompt.value)[:1900] + "\n**Do not delete this message or the character will stop working**")
 
-class EditEnvironmentButton(discord.ui.Button):
+# this class is only used by characters
+class EditEnvironmentButton(discord.ui.View):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=None)
-
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, custom_id="edit-environment")
+    async def edit_environment(self, button: discord.ui.Button, interaction: discord.Interaction):
+        try:
+            config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.channel.id))
+        except Exception as e: # something is wrong somewhere, possibly the thread was deleted
+            print(repr(e))
+            await interaction.response.pong()
+        else:
+            if config.locked_id != 0 and interaction.user.id != config.locked_id:
+                await interaction.response.pong()
+            else:
+                await interaction.response.send_modal()
 
 # this class is only used by character root messages
 class RootMessageActionsLocked(discord.ui.View):
@@ -514,16 +548,13 @@ def message_updater(message, streamer, character, user_message, thread, channel)
                 asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread, full_text, channel.id), loop=client.loop)
     global model_queue
     if character.maw:
-        if not message.channel.id in [x.user_message.channel.id for x in model_queue[1:]]:
+        if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
             asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text, character, user_message),
                                              loop=client.loop)
         else:
             asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
     else:
-        if not thread.id in [x.user_message.channel.id for x in model_queue[1:]]:
-            print("\n")
-            print(thread.id)
-            print([x.user_message.channel.id for x in model_queue[1:]])
+        if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
             asyncio.run_coroutine_threadsafe(
                 coro=edit_add_hookredobutton(hook_list[channel.id], message, full_text, character, user_message,
                                              thread), loop=client.loop)
@@ -554,9 +585,6 @@ async def async_watcher():
             if all_tokens != 0:
                 asyncio.run_coroutine_threadsafe(coro=client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.online), loop=client.loop)
             current_gen = model_queue[0]
-            history = current_gen.character.read_history()
-            history.append(MawCharacterMessage(current_gen.user_message.content, str(current_gen.user_message.id), "user"))
-            current_gen.character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
             if model == None:
                 print("allocating memory")
                 vram.allocate("Maw")
@@ -607,6 +635,7 @@ async def on_ready():
     await client.change_presence(status=discord.Status.idle)
     client.add_view(RootMessageActionsUnlocked())
     client.add_view(RootMessageActionsLocked())
+    client.add_view(EditEnvironmentButton())
 
 @client.event
 async def on_message(message):
@@ -673,15 +702,17 @@ async def on_message(message):
                     user_message = history[-2]
                 except:
                     user_message = None
+            history = character.read_history()
+            history.append(MawCharacterMessage(message.content, str(message.id), "user"))
+            character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
             model_queue.append(CharacterGen(message, character_message, character))
             if old_message_id:
                 try:
                     await hook.edit_message(message_id=old_message_id, view=EditMessageButton(character=character, user_message=user_message), thread=message.channel)
-                except: pass # isn't really needed but I don't like random error messages in my console
+                except: pass # isn't really needed, but I don't like random error messages in my console
 
 @client.event
 async def on_raw_message_edit(payload):
-    payload.message_id
     channel = client.get_channel(payload.channel_id)
     try: payload.data["content"]
     except: pass
@@ -703,7 +734,6 @@ async def on_raw_message_edit(payload):
 
 @client.event
 async def on_raw_message_delete(payload):
-    payload.message_id
     channel = client.get_channel(payload.channel_id)
     if isinstance(channel, discord.Thread) and os.path.exists("./characters/" + str(channel.guild.id) + "/" + str(channel.id) + "/"):
         config = read_config("./characters/" + str(channel.guild.id) + "/" + str(channel.id))
