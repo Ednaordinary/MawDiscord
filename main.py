@@ -683,6 +683,9 @@ async def on_message(message):
             config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None, 0)
             make_maw_character("./servers/" + str(message.guild.id), config)
             character = MawCharacter("Maw", config, True)
+        history = character.read_history()
+        history.append(MawCharacterMessage(message.content, str(message.id), "user"))
+        character.write_history(history)  # if message is edited or deleted during generation, it needs to be reflected
         model_queue.append(CharacterGen(character_message=maw_message, character=character, thread=message.channel))
         if old_message_id:
             channel = client.get_channel(old_message_id[1])
