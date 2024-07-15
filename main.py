@@ -27,12 +27,13 @@ all_time = 0
 
 # this class is only used by characters
 class CharacterModal(discord.ui.Modal):
-    def __init__(self, avatar):
+    def __init__(self, avatar, locked):
         super().__init__(
             title="Make Character",
             timeout=60 * 60 * 24,  # 1 day
         )
         self.avatar = avatar
+        self.locked = locked
         self.name = discord.ui.TextInput(
             label="Name",
             style=discord.TextInputStyle.short,
@@ -70,7 +71,7 @@ class CharacterModal(discord.ui.Modal):
             style=discord.TextInputStyle.paragraph,
             required=False,
             min_length=0,
-            max_length=1000,
+            max_length=2000,
         )
         self.add_item(self.first_message)
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -84,12 +85,12 @@ class CharacterModal(discord.ui.Modal):
         if self.avatar:
             avatar_image = await self.avatar.read()
             try:
-                root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**", file=discord.File(fp=io.BytesIO(avatar_image), filename="avatar.png"))
+                root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**", file=discord.File(fp=io.BytesIO(avatar_image), filename="avatar.png"), view=RootMessageActionsLocked() if self.locked else RootMessageActionsUnlocked())
             except Exception as e:
                 await interaction.send("Failed: " + str(repr(e)))
                 return
         else:
-            root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**")
+            root = await interaction.send(response + "\n**Do not delete this message or the character will stop working**", view=RootMessageActionsLocked() if self.locked else RootMessageActionsUnlocked())
         try:
             try:
                 root = await root.fetch()
@@ -100,10 +101,11 @@ class CharacterModal(discord.ui.Modal):
             await root.edit("Thread could not be created (are you already in one?)")
         else:
             await thread.join()
+            locked_id = interaction.user.id if self.locked else 0
             if self.avatar:
-                config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value, root.attachments[0].url)
+                config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value, root.attachments[0].url, locked_id=locked_id, original_user_id=interaction.user.id)
             else:
-                config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value, None)
+                config = MawCharacterConfig(prompt, self.environment.value, thread.id, "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/ids.txt", "./characters/" + str(root.guild.id) + "/" + str(thread.id) + "/history.txt", self.name.value, None, locked_id=locked_id, original_user_id=interaction.user.id)
             make_maw_character("./characters/" + str(root.guild.id) + "/" + str(thread.id), config)
             character = MawCharacter(self.name.value, config, False)
             history = None
@@ -164,7 +166,7 @@ class EditSystemPromptModal(discord.ui.Modal):
             default_value=current_prompt,
             required=True,
             min_length=30,
-            max_length=4150,
+            max_length=4000, # cant be above 4000
         )
         self.add_item(self.new_prompt)
         self.config = config
@@ -173,13 +175,13 @@ class EditSystemPromptModal(discord.ui.Modal):
         config = self.config
         config.system_prompt = self.new_prompt.value
         make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(self.thread.id), config)
-        await interaction.message.edit(str(self.new_prompt[:1900]) + "\n**Do not delete this message or the character will stop working**")
+        await interaction.message.edit(str(self.new_prompt.value)[:1900] + "\n**Do not delete this message or the character will stop working**")
 
 # this class is only used by character root messages
-class RootMessageActionsLocked(discord.ui.view):
+class RootMessageActionsLocked(discord.ui.View):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
-    @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary, custom_id="edit-prompt-locked")
     async def edit_prompt(self, button: discord.ui.Button, interaction: discord.Interaction):
         try:
             config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
@@ -192,7 +194,7 @@ class RootMessageActionsLocked(discord.ui.view):
             else:
                 await interaction.response.send_modal(EditSystemPromptModal(config.system_prompt, config, interaction.message.thread))
 
-    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.primary, custom_id="unlock")
     async def lock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         try:
             config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
@@ -208,10 +210,10 @@ class RootMessageActionsLocked(discord.ui.view):
                 await interaction.response.edit_message(view=RootMessageActionsUnlocked())
 
 # this class is only used by character root messages
-class RootMessageActionsUnlocked(discord.ui.view):
+class RootMessageActionsUnlocked(discord.ui.View):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
-    @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Edit Prompt", style=discord.ButtonStyle.primary, custom_id="edit-prompt-unlocked")
     async def edit_prompt(self, button: discord.ui.Button, interaction: discord.Interaction):
         try:
             config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
@@ -219,7 +221,7 @@ class RootMessageActionsUnlocked(discord.ui.view):
         except Exception as e:
             print(repr(e))
             await interaction.response.pong()
-    @discord.ui.button(label="Lock", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Lock", style=discord.ButtonStyle.primary, custom_id="lock")
     async def lock_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         try:
             config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
@@ -593,6 +595,8 @@ def watcher():
 async def on_ready():
     print(f'{client.user.name} has connected to Discord!')
     await client.change_presence(status=discord.Status.idle)
+    client.add_view(RootMessageActionsUnlocked())
+    client.add_view(RootMessageActionsLocked())
 
 @client.event
 async def on_message(message):
@@ -643,26 +647,27 @@ async def on_message(message):
     if character_response:
         hook = await get_webhook(message.channel.parent)
         config = read_config("./characters/" + str(message.guild.id) + "/" + str(message.channel.id))
-        if config.avatar:
-            character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel, avatar_url=config.avatar)
-        else:
-            character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel)
-        character = MawCharacter(config.name, config, False)
-        old_message_id = None
-        if os.path.isfile("./characters/" + str(message.guild.id) + "/" + str(message.channel.id) + "/history.txt"):
-            history = character.read_history()
-            try:
-                old_message_id = int(history[-1].message_id)
-            except: pass
-            try:
-                user_message = history[-2]
-            except:
-                user_message = None
-        model_queue.append(CharacterGen(message, character_message, character))
-        if old_message_id:
-            try:
-                await hook.edit_message(message_id=old_message_id, view=EditMessageButton(character=character, user_message=user_message), thread=message.channel)
-            except: pass # isn't really needed but I don't like random error messages in my console
+        if config.locked_id == 0 or message.author.id == config.locked_id:
+            if config.avatar:
+                character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel, avatar_url=config.avatar)
+            else:
+                character_message = await hook.send(content="...", username=config.name, wait=True, thread=message.channel)
+            character = MawCharacter(config.name, config, False)
+            old_message_id = None
+            if os.path.isfile("./characters/" + str(message.guild.id) + "/" + str(message.channel.id) + "/history.txt"):
+                history = character.read_history()
+                try:
+                    old_message_id = int(history[-1].message_id)
+                except: pass
+                try:
+                    user_message = history[-2]
+                except:
+                    user_message = None
+            model_queue.append(CharacterGen(message, character_message, character))
+            if old_message_id:
+                try:
+                    await hook.edit_message(message_id=old_message_id, view=EditMessageButton(character=character, user_message=user_message), thread=message.channel)
+                except: pass # isn't really needed but I don't like random error messages in my console
 
 @client.event
 async def on_raw_message_edit(payload):
@@ -733,7 +738,7 @@ async def character(
     if avatar and not avatar.content_type == "image/jpeg" and not avatar.content_type == "image/png":
         await interaction.response.send_message("Avatar is not png or jpg. Please try again")
     else:
-        modal = CharacterModal(avatar)
+        modal = CharacterModal(avatar, locked)
         await interaction.response.send_modal(modal)
 
 
