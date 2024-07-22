@@ -288,6 +288,22 @@ class RootMessageActionsLocked(discord.ui.View):
                     "./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id), config)
                 await interaction.response.edit_message(view=RootMessageActionsUnlocked())
 
+    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.primary, custom_id="avatar-locked")
+    async def avatar_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        try:
+            config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
+        except Exception as e:  # something is wrong somewhere, possibly the thread was deleted
+            print(repr(e))
+            await interaction.response.pong()
+        else:
+            if config.original_user_id != 0 and interaction.user.id != config.original_user_id:
+                await interaction.response.pong()
+            else:
+                await interaction.response.send_message("Send a message in this channel with the new avatar.",
+                                                        ephemeral=True)
+                global watched_avatars
+                watched_avatars.append(interaction)
+
 
 # this class is only used by character root messages
 class RootMessageActionsUnlocked(discord.ui.View):
@@ -320,7 +336,7 @@ class RootMessageActionsUnlocked(discord.ui.View):
                     "./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id), config)
                 await interaction.response.edit_message(view=RootMessageActionsLocked())
 
-    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.primary, custom_id="avatar")
+    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.primary, custom_id="avatar-unlocked")
     async def avatar_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         try:
             config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.thread.id))
@@ -645,7 +661,7 @@ def message_updater(message, streamer, character, thread, channel):
     for text in streamer:
         print(text, flush=True, end='')
         full_text = full_text + text
-        if character.maw:
+        if character.maw and not isinstance(channel, discord.DMChannel):
             images = re.findall(r"<-[\S\s]+>", full_text)
             if images != None:
                 with open("../DanteMode/queue.txt", "a") as image_queue:
@@ -823,14 +839,33 @@ async def on_message(message):
     last_message[message.channel.id] = message
     if message.attachments:
         if message.author.id in [x.user.id for x in watched_avatars]:
+            index = None
             for user, idx in enumerate([x.user.id for x in watched_avatars]):
                 if message.author.id == user:
                     avatar_interaction = watched_avatars[idx]
+                    index = idx
                     break
             if avatar_interaction.channel == message.channel:
                 new_avatar = message.attachments[0]
                 if not new_avatar.content_type == "image/jpeg" and not new_avatar.content_type == "image/png":
                     await message.channel.send("Avatar is not png or jpg. Press the button to try again.")
+                else:
+                    new_avatar = await new_avatar.to_file()
+                    try:
+                        await message.delete()
+                    except:
+                        pass
+                    try:
+                        new_avatar = await avatar_interaction.edit_original_message(file=new_avatar)
+                    except:
+                        await message.channel.send("Failed to set new avatar!")
+                    else:
+                        config = read_config("./characters/" + str(message.guild.id) + "/" + str(message.channel.id))
+                        config.avatar = new_avatar.attachments[0].url
+                        make_maw_character("./characters/" + str(message.guild.id) + "/" + str(message.channel.id),
+                                           config)
+                        await message.channel.send("New avatar set")
+                watched_avatars.pop(index)
     if maw_response:
         maw_message = await message.channel.send("...")
         old_message_id = None
@@ -842,7 +877,7 @@ async def on_message(message):
                 history = character.read_history()
                 try:
                     old_message_id = (
-                    int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
+                        int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
                 except:
                     pass
         else:
