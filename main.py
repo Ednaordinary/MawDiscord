@@ -282,13 +282,14 @@ class RedoMessageButton(discord.ui.View):
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary)
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.edit_message(content="...")
+        if isinstance(interaction.channel, )
         config = read_config("./servers/" + str(interaction.guild.id))
         character = MawCharacter("Maw", config, True)
         history = character.read_history()
         try:
             character.write_history(history[:-1])
         except: pass
-        model_queue.append(CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel))
+        model_queue.append(CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel, user_message=None))
 
 # this class is only used by characters
 class EditAndRedoMessageButton(discord.ui.View):
@@ -315,7 +316,7 @@ class EditAndRedoMessageButton(discord.ui.View):
             try:
                 character.write_history(history[:-1])
             except: pass
-            model_queue.append(CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel))
+            model_queue.append(CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel, user_message=None))
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-and-redo-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         #Only characters use this class so delete is here
@@ -436,10 +437,11 @@ class MawCharacter:
         return history
 
 class CharacterGen:
-    def __init__(self, character_message, character, thread):
+    def __init__(self, character_message, character, thread, user_message):
         self.character_message = character_message
         self.character = character
         self.thread = thread
+        self.user_message = user_message
 
 def make_maw_character(path, config):
     os.makedirs(path, exist_ok=True)
@@ -606,6 +608,9 @@ async def async_watcher():
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
+            if current_gen.user_message != None:
+                history.append(current_gen.user_message)
+                character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
             model_input = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             if isinstance(current_gen.thread, discord.Thread):
@@ -649,15 +654,29 @@ async def on_message(message):
     global last_message
     maw_response = False
     character_response = False
-    if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
-    try:
-        if last_message[message.channel.id].author.id == client.user.id and second_last_message[message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
-            maw_response = True
-    except:
-        pass
-    if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
-        character_response = True
-        maw_response = False
+    dm = False
+    if isinstance(message.channel, discord.TextChannel):
+        if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
+        try:
+            if last_message[message.channel.id].author.id == client.user.id and second_last_message[message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
+                maw_response = True
+        except:
+            pass
+    if isinstance(message.channel, discord.Thread):
+        if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
+            character_response = True
+            maw_response = False
+        elif "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
+        else:
+            try:
+                if last_message[message.channel.id].author.id == client.user.id and second_last_message[
+                    message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
+                    maw_response = True
+            except:
+                pass
+    if isinstance(message.channel, discord.DMChannel):
+        maw_response = True
+        dm = True
     if message.author.bot:
         character_response = False
         maw_response = False
@@ -669,10 +688,11 @@ async def on_message(message):
     if maw_response:
         maw_message = await message.channel.send("...")
         old_message_id = None
-        if os.path.isdir("./servers/" + str(message.guild.id)):
-            config = read_config("./servers/" + str(message.guild.id))
+        relative_path = "./servers/" + str(message.channel.id) if dm else "./servers/" + str(message.guild.id)
+        if os.path.isdir(relative_path):
+            config = read_config(relative_path)
             character = MawCharacter("Maw", config, True)
-            if os.path.isfile("./servers/" + str(message.guild.id) + "/history.txt"):
+            if os.path.isfile(relative_path + "/history.txt"):
                 history = character.read_history()
                 try:
                     old_message_id = (int(history[-1].message_id.split("-")[-2]), int(history[-1].message_id.split("-")[-1]))
@@ -680,13 +700,14 @@ async def on_message(message):
                     pass
         else:
             system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna."
-            config = MawCharacterConfig(system_prompt, "", None, "./servers/" + str(message.guild.id) + "/ids.txt", "./servers/" + str(message.guild.id) + "/history.txt", "Maw", None, 0)
-            make_maw_character("./servers/" + str(message.guild.id), config)
+            config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt", relative_path + "/history.txt", "Maw", None, 0)
+            make_maw_character(relative_path, config)
             character = MawCharacter("Maw", config, True)
-        history = character.read_history()
-        history.append(MawCharacterMessage(message.content, str(message.id), "user"))
-        character.write_history(history)  # if message is edited or deleted during generation, it needs to be reflected
-        model_queue.append(CharacterGen(character_message=maw_message, character=character, thread=message.channel))
+        #history = character.read_history()
+        #history.append(MawCharacterMessage(message.content, str(message.id), "user"))
+        #character.write_history(history)  # if message is edited or deleted during generation, it needs to be reflected
+        user_message = MawCharacterMessage(content=message.content, message_id=str(message.id), role="user")
+        model_queue.append(CharacterGen(character_message=maw_message, character=character, thread=message.channel, user_message=user_message))
         if old_message_id:
             channel = client.get_channel(old_message_id[1])
             old_message = await channel.fetch_message(old_message_id[0])
@@ -706,10 +727,11 @@ async def on_message(message):
                 try:
                     old_message_id = int(history[-1].message_id)
                 except: pass
-            history = character.read_history()
-            history.append(MawCharacterMessage(message.content, str(message.id), "user"))
-            character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
-            model_queue.append(CharacterGen(character_message=character_message, character=character, thread=message.channel))
+            #history = character.read_history()
+            #history.append(MawCharacterMessage(message.content, str(message.id), "user"))
+            #character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
+            user_message = MawCharacterMessage(content=message.content, message_id=str(message.id), role="user")
+            model_queue.append(CharacterGen(character_message=character_message, character=character, thread=message.channel, user_message=user_message))
             if old_message_id:
                 try:
                     await hook.edit_message(message_id=old_message_id, view=EditMessageButton(), thread=message.channel)
@@ -760,7 +782,7 @@ async def on_raw_message_delete(payload):
                 hook = await get_webhook(channel.parent)
                 await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButton())
 
-@client.slash_command(description="Sends a form to make a character")
+@client.slash_command(description="Sends a form to make a character", dm_permission=False)
 async def character(
         interaction: discord.Interaction,
         avatar: Optional[discord.Attachment] = discord.SlashOption(
@@ -786,8 +808,12 @@ async def character(
 async def reset(
         interaction: discord.Interaction,
 ):
-    if os.path.isfile("./servers/" + str(interaction.guild.id) + "/history.txt") and os.path.isfile("./servers/" + str(interaction.guild.id) + "/ids.txt"):
-        await interaction.response.send_message("Are you sure? This will delete Maws memory in this server, not including characters.", view=ResetContextButton(history_path="./servers/" + str(interaction.guild.id) + "/history.txt", ids_path="./servers/" + str(interaction.guild.id) + "/ids.txt"))
+    if isinstance(interaction.channel, discord.DMChannel):
+        relative_path = "./servers/" + str(interaction.channel.id)
+    else:
+        relative_path = "./servers/" + str(interaction.guild.id)
+    if os.path.isfile(relative_path + "/history.txt") and os.path.isfile(relative_path + "/ids.txt"):
+        await interaction.response.send_message("Are you sure? This will delete Maws memory in this server, not including characters.", view=ResetContextButton(history_path=relative_path + "/history.txt", ids_path=relative_path + "/ids.txt"))
     else:
         await interaction.response.send_message("No context found to clear.")
 
