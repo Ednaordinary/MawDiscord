@@ -445,7 +445,7 @@ class EditMessageButton(discord.ui.View):
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.send_modal(EditMessageModal(interaction.message.content))
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, character))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -594,6 +594,7 @@ def read_config(path):
 def history_to_llama(history, tokenizer, config):
     llama = []
     token_length = 0
+    print(config.system_prompt)
     system_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.system_prompt}],
                                                   tokenize=True, return_tensors='pt', add_generation_prompt=False)
     history.reverse()
@@ -671,10 +672,11 @@ def message_updater(message, streamer, character, thread, channel):
                             image = image[2:-2]
                         else:
                             image = image[2:-1]
-                        image_queue.write("\n" + str(channel.id) + "|" + image[2:-1].replace("\n", "\\n"))
-            pings = re.findall(r"<+[\S\s]+>", full_text)
+                        image_queue.write("\n" + str(channel.id) + "|" + image.replace("\n", "\\n"))
+            pings = re.findall(r"\|+[\S\s]+\|", full_text)
             if pings != None:
                 for ping in pings:
+                    old_ping = ping
                     ping = ping.lower().strip()[2:-1]
                     new_ping = "No ping found. (" + ping + ")"
                     ping_cutoff = 2
@@ -682,13 +684,13 @@ def message_updater(message, streamer, character, thread, channel):
                         int(ping)
                     except:
                         for member in channel.members:
-                            if len(ping) > ping_cutoff and ping in member.nick.lower().strip():
+                            if member.nick and len(ping) > ping_cutoff and ping in member.nick.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
-                            elif ping == member.nick.lower().strip():
+                            elif member.nick and ping == member.nick.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
-                            elif len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                            elif member.global_name and len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
-                            elif ping == member.global_name.lower().strip():
+                            elif member.global_name and ping == member.global_name.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
                             elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
@@ -696,22 +698,22 @@ def message_updater(message, streamer, character, thread, channel):
                                 new_ping = "<@" + str(member.id) + ">"
                     else:
                         if int(ping) in [x.id for x in channel.members]:
-                            new_ping = ping
+                            new_ping = "<@" + str(ping) + ">"
                         else:
                             for member in channel.members:
-                                if len(ping) > ping_cutoff and ping in member.nick.lower().strip():
+                                if member.nick and len(ping) > ping_cutoff and ping in member.nick.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
-                                elif ping == member.nick.lower().strip():
+                                elif member.nick and ping == member.nick.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
-                                elif len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                                elif member.global_name and len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
-                                elif ping == member.globalname.lower().strip():
+                                elif member.global_name and ping == member.globalname.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
                                 elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
                                 elif ping == member.name.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
-                    full_text = full_text.replace(ping, new_ping)
+                    full_text = full_text.replace(old_ping, new_ping)
         if time.time() - limiter > 0.8:
             limiter = time.time()
             if character.maw:
@@ -924,10 +926,14 @@ async def on_message(message):
                 system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to " + (
                     message.author.global_name if message.author.global_name else message.author.name)
             else:
-                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '>', like this: <-prompt>. Do not make ASCII art or just describe the image without enclosing it unless specifically stated, and remember to always start image prompts with <- and end them with >. To ping users, enclose either their name or ID in '<+' and '>', like this: <+Edna>."
+                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '>', like this: <-prompt>. Do not make ASCII art or just describe the image without enclosing it unless specifically stated, and remember to always start image prompts with <- and end them with >. To ping users, enclose either their name or ID in '|+' and '|', like this: |+Edna|. Do not extend the users name, use the exact name you are given. You are talking in a server named "
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
+            if not isinstance(message.channel, discord.DMChannel):
+                print("adding channel and server")
+                config.system_prompt = config.system_prompt + message.guild.name + " in channel " + message.channel.name
+                print(config.system_prompt)
             character = MawCharacter("Maw", config, True)
         #history = character.read_history()
         #history.append(MawCharacterMessage(message.content, str(message.id), "user"))
