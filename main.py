@@ -282,8 +282,10 @@ class RedoMessageButton(discord.ui.View):
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary)
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.edit_message(content="...")
-        if isinstance(interaction.channel, )
-        config = read_config("./servers/" + str(interaction.guild.id))
+        if isinstance(interaction.channel, discord.DMChannel):
+            config = read_config("./servers/" + str(interaction.channel.id))
+        else:
+            config = read_config("./servers/" + str(interaction.guild.id))
         character = MawCharacter("Maw", config, True)
         history = character.read_history()
         try:
