@@ -1,6 +1,7 @@
 import io
 import os
 import gc
+import re
 import sys
 import nextcord as discord
 from dotenv import load_dotenv
@@ -544,6 +545,17 @@ def message_updater(message, streamer, character, thread, channel):
     for text in streamer:
         print(text, flush=True, end='')
         full_text = full_text + text
+        if character.maw:
+            images = re.findall(r"<-[\S\s]+>", full_text)
+            if images != None:
+                with open("../DanteMode/queue.txt", "a") as image_queue:
+                    for image in images:
+                        full_text = full_text.replace(image, "")
+                        if image[-2] == "-":
+                            image = image[2:-2]
+                        else:
+                            image = image[2:-1]
+                        image_queue.write("\n" + str(channel.id) + "|" + image[2:-1].replace("\n", "\\n"))
         if time.time() - limiter > 0.8:
             limiter = time.time()
             if character.maw:
@@ -704,7 +716,7 @@ async def on_message(message):
             if isinstance(message.channel, discord.DMChannel):
                 system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to " + (message.author.global_name if message.author.global_name else message.author.name)
             else:
-                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message."
+                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '>', like this: <-prompt>"
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt", relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
             character = MawCharacter("Maw", config, True)
