@@ -672,6 +672,46 @@ def message_updater(message, streamer, character, thread, channel):
                         else:
                             image = image[2:-1]
                         image_queue.write("\n" + str(channel.id) + "|" + image[2:-1].replace("\n", "\\n"))
+            pings = re.findall(r"<+[\S\s]+>", full_text)
+            if pings != None:
+                for ping in pings:
+                    ping = ping.lower().strip()[2:-1]
+                    new_ping = "No ping found. (" + ping + ")"
+                    ping_cutoff = 2
+                    try:
+                        int(ping)
+                    except:
+                        for member in channel.members:
+                            if len(ping) > ping_cutoff and ping in member.nick.lower().strip():
+                                new_ping = "<@" + str(member.id) + ">"
+                            elif ping == member.nick.lower().strip():
+                                new_ping = "<@" + str(member.id) + ">"
+                            elif len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                                new_ping = "<@" + str(member.id) + ">"
+                            elif ping == member.global_name.lower().strip():
+                                new_ping = "<@" + str(member.id) + ">"
+                            elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
+                                new_ping = "<@" + str(member.id) + ">"
+                            elif ping == member.name.lower().strip():
+                                new_ping = "<@" + str(member.id) + ">"
+                    else:
+                        if int(ping) in [x.id for x in channel.members]:
+                            new_ping = ping
+                        else:
+                            for member in channel.members:
+                                if len(ping) > ping_cutoff and ping in member.nick.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif ping == member.nick.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif ping == member.globalname.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif ping == member.name.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                    full_text = full_text.replace(ping, new_ping)
         if time.time() - limiter > 0.8:
             limiter = time.time()
             if character.maw:
@@ -884,7 +924,7 @@ async def on_message(message):
                 system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to " + (
                     message.author.global_name if message.author.global_name else message.author.name)
             else:
-                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '>', like this: <-prompt>. Do not make ASCII art or just describe the image without enclosing it unless specifically stated, and remember to always start image prompts with <- and end them with >."
+                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '>', like this: <-prompt>. Do not make ASCII art or just describe the image without enclosing it unless specifically stated, and remember to always start image prompts with <- and end them with >. To ping users, enclose either their name or ID in '<+' and '>', like this: <+Edna>."
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
