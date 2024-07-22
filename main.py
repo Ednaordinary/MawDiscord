@@ -839,12 +839,8 @@ async def on_message(message):
     last_message[message.channel.id] = message
     if message.attachments:
         if message.author.id in [x.user.id for x in watched_avatars]:
-            index = None
-            for user, idx in enumerate([x.user.id for x in watched_avatars]):
-                if message.author.id == user:
-                    avatar_interaction = watched_avatars[idx]
-                    index = idx
-                    break
+            index = [x.user.id for x in watched_avatars].index(message.author.id)
+            avatar_interaction = watched_avatars[index]
             if avatar_interaction.channel == message.channel:
                 new_avatar = message.attachments[0]
                 if not new_avatar.content_type == "image/jpeg" and not new_avatar.content_type == "image/png":
@@ -856,15 +852,18 @@ async def on_message(message):
                     except:
                         pass
                     try:
-                        new_avatar = await avatar_interaction.edit_original_message(file=new_avatar)
+                        new_avatar = await avatar_interaction.message.edit(file=new_avatar)
                     except:
                         await message.channel.send("Failed to set new avatar!")
                     else:
-                        config = read_config("./characters/" + str(message.guild.id) + "/" + str(message.channel.id))
-                        config.avatar = new_avatar.attachments[0].url
-                        make_maw_character("./characters/" + str(message.guild.id) + "/" + str(message.channel.id),
-                                           config)
-                        await message.channel.send("New avatar set")
+                        try:
+                            config = read_config("./characters/" + str(message.guild.id) + "/" + str(avatar_interaction.message.thread.id))
+                            config.avatar = new_avatar.attachments[0].url
+                            make_maw_character("./characters/" + str(message.guild.id) + "/" + str(avatar_interaction.message.thread.id),
+                                               config)
+                            await message.channel.send("New avatar set")
+                        except:
+                            await message.channel.send("Failed to set new avatar! Thread may have been deleted.")
                 watched_avatars.pop(index)
     if maw_response:
         maw_message = await message.channel.send("...")
