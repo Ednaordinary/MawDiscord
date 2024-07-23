@@ -1,6 +1,6 @@
 nextcord
-git+https://github.com/huggingface/transformers
-accelerate>0.32.1
+transformers
+accelerate
 python-dotenv
 torch
 setuptools
@@ -15,5 +15,4 @@ triton
 xformers
 fbgemm-gpu
 hqq
-git+https://github.com/IST-DASLab/marlin
-git+https://github.com/NetEase-FuXi/EETQ.git
+git+https://github.com/neuralmagic/AutoFP8.git
