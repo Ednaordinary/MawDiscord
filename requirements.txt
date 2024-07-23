@@ -15,4 +15,4 @@ triton
 xformers
 fbgemm-gpu
 hqq
-git+https://github.com/neuralmagic/AutoFP8.git
+quanto

@@ -22,5 +22,5 @@ messages = [
     {"role": "user", "content": "Who are you?"},
 ]
 tokenizer.apply_chat_template(messages)
-output = model(messages)
+output = model.generate(messages)
 print(tokenizer.decode(output))

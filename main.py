@@ -13,8 +13,10 @@ import asyncio
 from typing import Optional
 import vram
 
-model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matching_ngram_size=2,
-                  prompt_lookup_num_tokens=20, repetition_penalty=1.2)  # PR isnt merged but including in readme
+#max_matching_ngram_size=2, prompt_lookup_num_tokens=20,
+model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, repetition_penalty=1.2,
+                  cache_implementation="quantized",
+                  cache_config={"backend": "quanto", "nbits": 4})  # PR isnt merged but including in readme
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -28,10 +30,11 @@ client = discord.Client(intents=intents)
 all_tokens = 0
 all_time = 0
 
-os.environ["OMP_NUM_THREADS"]  = "16"
-os.environ["TOKENIZERS_PARALLELISM"]  = "1"
+os.environ["OMP_NUM_THREADS"] = "16"
+os.environ["TOKENIZERS_PARALLELISM"] = "1"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
 
 # this class is only used by characters
 class CharacterModal(discord.ui.Modal):
@@ -612,7 +615,7 @@ def history_to_llama(history, tokenizer, config):
         llama_message = [{"role": role, "content": message.content}]
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
-        if token_length + llama_message.shape[1] < (6500 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (32000 - system_prompt.shape[1]):
             llama.append(llama_message)
             token_length += llama_message.shape[1]
         else:
@@ -621,7 +624,7 @@ def history_to_llama(history, tokenizer, config):
         environment_prompt = tokenizer.apply_chat_template(
             conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + llama_message.shape[1] < (6500 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (32000 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += llama_message.shape[1]
     llama.append(system_prompt)
@@ -672,12 +675,17 @@ def message_updater(message, streamer, character, thread, channel):
         print(text, flush=True, end='')
         full_text = full_text + text
         if character.maw and not isinstance(channel, discord.DMChannel):
-            images = re.findall(r"<-[\S\s]+->", full_text)
+            images = re.findall(r"<-[\S\s]+>", full_text)
             if images != None:
                 with open("../DanteMode/queue.txt", "a") as image_queue:
                     for image in images:
                         full_text = full_text.replace(image, "")
-                        image = image[2:-2]
+                        image = image[2:-1]
+                        try:
+                            if image[-1] == "-":
+                                image = image[:-1]
+                        except:
+                            pass
                         image_queue.write("\n" + str(channel.id) + "|" + image.replace("\n", "\\n"))
             pings = re.findall(r"\|+[\S\s]+\|", full_text)
             if pings != None:
@@ -754,7 +762,7 @@ async def async_watcher():
     model = None
     tokenizer = AutoTokenizer.from_pretrained(
         #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-        "meta-llama/Meta-Llama-3-8B-Instruct"
+        "meta-llama/Meta-Llama-3.1-8B-Instruct"
     )  # can just be kept loaded
     stop_token = tokenizer.encode("<|eot_id|>")
     while True:
@@ -796,7 +804,13 @@ async def async_watcher():
                 # )
                 #prepare_for_inference(model, backend="torchao_int4")
                 #prepare_for_inference(model, backend="marlin", allow_merge=True)
-                model = AutoModelForCausalLM.from_pretrained("llama-3-8b-8nbits-eetq", local_files_only=True, device_map="cuda", low_cpu_mem_usage=True, attn_implementation="flash_attention_2")
+                #model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True, device_map="cuda", low_cpu_mem_usage=True, attn_implementation="flash_attention_2")
+                # model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True,
+                #                                              device_map="cuda", low_cpu_mem_usage=True,
+                #                                              attn_implementation="flash_attention_2")
+                model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", local_files_only=True,
+                                                             device_map="cuda", low_cpu_mem_usage=True,
+                                                             attn_implementation="flash_attention_2")
                 model.eval()
             gc.collect()
             torch.cuda.empty_cache()
@@ -818,7 +832,7 @@ async def async_watcher():
             start_time = time.time()
             with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
                 response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                                      eos_token_id=stop_token)
+                                          eos_token_id=stop_token)
             all_tokens += len(response[0][model_input.shape[1]:])
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
