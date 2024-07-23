@@ -13,6 +13,7 @@ import asyncio
 from typing import Optional
 import vram
 from hqq.utils.patching import prepare_for_inference
+from hqq.utils.generation_hf import HFGenerator
 
 model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matching_ngram_size=2,
                   prompt_lookup_num_tokens=15, repetition_penalty=1.2)  # PR isnt merged but including in readme
@@ -29,6 +30,10 @@ client = discord.Client(intents=intents)
 all_tokens = 0
 all_time = 0
 
+os.environ["OMP_NUM_THREADS"]  = "16"
+os.environ["TOKENIZERS_PARALLELISM"]  = "1"
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 # this class is only used by characters
 class CharacterModal(discord.ui.Modal):
@@ -782,18 +787,20 @@ async def async_watcher():
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
                 # group_size=64, quant_zero=False, quant_scale=False,
-                quant_config  = HqqConfig(nbits=4, axis=1, quant_zero=False, quant_scale=False, compute_dtype=torch.bfloat16)
+                quant_config  = HqqConfig(nbits=2, axis=1, group_size=64, quant_zero=False, quant_scale=False, compute_dtype=torch.bfloat16)
                 model = AutoModelForCausalLM.from_pretrained(
-                    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-                    #"cogvlm-abliterated",
-                    local_files_only=True,
-                    device_map="auto",
+                    #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                    "failspy/llama-3-70B-Instruct-abliterated",
+                    offload_meta=True,
+                    #local_files_only=True,
+                    device_map="cuda",
                     torch_dtype=torch.bfloat16,
                     low_cpu_mem_usage=True,
-                    attn_implementation="flash_attention_2",
+                    #attn_implementation="flash_attention_2",
+                    attn_implementation="sdpa",
                     quantization_config=quant_config,
                 )
-                prepare_for_inference(model, backend="torchao_int4")
+                #prepare_for_inference(model, backend="torchao_int4")
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
