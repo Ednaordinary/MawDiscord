@@ -25,6 +25,7 @@ from torchvision import transforms
 
 torch.set_grad_enabled(False)
 
+
 def get_harmful_instructions():
     url = 'https://raw.githubusercontent.com/llm-attacks/llm-attacks/main/data/advbench/harmful_behaviors.csv'
     response = requests.get(url)
@@ -32,6 +33,7 @@ def get_harmful_instructions():
     instructions = dataset['goal'].tolist()
     train, test = train_test_split(instructions, test_size=0.2, random_state=42)
     return train, test
+
 
 def get_harmless_instructions():
     hf_path = 'tatsu-lab/alpaca'
@@ -44,12 +46,13 @@ def get_harmless_instructions():
     train, test = train_test_split(instructions, test_size=0.2, random_state=42)
     return train, test
 
+
 harmful_inst_train, harmful_inst_test = get_harmful_instructions()
 harmless_inst_train, harmless_inst_test = get_harmless_instructions()
 
-CHAT_TEMPLATE = """<|user|>\n{instruction}<|end|>\n<|assistant|>""" # phi-3 chat template
+CHAT_TEMPLATE = """<|user|>\n{instruction}<|end|>\n<|assistant|>"""  # phi-3 chat template
 
-CHAT_TEMPLATE = """<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>""" # llama-3 chat template
+CHAT_TEMPLATE = """<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""  # llama-3 chat template
 
 if os.path.exists("meta-llama"):
     MODEL_PATH = 'meta-llama/Meta-Llama-3-8B-Instruct'
@@ -69,17 +72,20 @@ if os.path.exists("meta-llama"):
 else:
     raise FileNotFoundError("Please place the model in a folder called 'meta-lama/Meta-Llama-3-8B-Intruct'")
 
+
 def tokenize_instructions_chat(
-    tokenizer: PreTrainedTokenizer,
-    instructions: List[str]
+        tokenizer: PreTrainedTokenizer,
+        instructions: List[str]
 ) -> Int[Tensor, 'batch_size seq_len']:
     prompts = [CHAT_TEMPLATE.format(instruction=instruction) for instruction in instructions]
     #prompts = [prompt for prompt in prompts if isinstance(prompt, str)]
     prompts_encoded = []
     for prompt in prompts:
-        prompts_encoded.append(tokenizer.encode(prompts, padding=True, truncation=False, return_tensors="pt", is_split_into_words=True))
+        prompts_encoded.append(
+            tokenizer.encode(prompts, padding=True, truncation=False, return_tensors="pt", is_split_into_words=True))
     print(len(prompts_encoded))
     return torch.stack(prompts_encoded)
+
 
 # def _history_to_prompt(signal_type, history, query):
 #     if signal_type == 'base':
@@ -169,32 +175,35 @@ def tokenize_instructions_chat(
 
 
 tokenize_instructions_fn = functools.partial(tokenize_instructions_chat, tokenizer=model.tokenizer)
+
+
 def _generate_with_hooks(
-    model: HookedTransformer,
-    toks: Int[Tensor, 'batch_size seq_len'],
-    max_tokens_generated: int = 64,
-    fwd_hooks = [],
+        model: HookedTransformer,
+        toks: Int[Tensor, 'batch_size seq_len'],
+        max_tokens_generated: int = 64,
+        fwd_hooks=[],
 ) -> List[str]:
     all_toks = torch.zeros((toks.shape[0], toks.shape[1] + max_tokens_generated), dtype=torch.long, device=toks.device)
     all_toks[:, :toks.shape[1]] = toks
     for i in range(max_tokens_generated):
         with model.hooks(fwd_hooks=fwd_hooks):
             logits = model(all_toks[:, :-max_tokens_generated + i])
-            next_tokens = logits[:, -1, :].argmax(dim=-1) # greedy sampling (temperature=0)
-            all_toks[:,-max_tokens_generated+i] = next_tokens
+            next_tokens = logits[:, -1, :].argmax(dim=-1)  # greedy sampling (temperature=0)
+            all_toks[:, -max_tokens_generated + i] = next_tokens
     return model.tokenizer.batch_decode(all_toks[:, toks.shape[1]:], skip_special_tokens=True)
 
+
 def get_generations(
-    model: HookedTransformer,
-    instructions: List[str],
-    tokenize_instructions_fn: Callable[[List[str]], Int[Tensor, 'batch_size seq_len']],
-    fwd_hooks = [],
-    max_tokens_generated: int = 64,
-    batch_size: int = 4,
+        model: HookedTransformer,
+        instructions: List[str],
+        tokenize_instructions_fn: Callable[[List[str]], Int[Tensor, 'batch_size seq_len']],
+        fwd_hooks=[],
+        max_tokens_generated: int = 64,
+        batch_size: int = 4,
 ) -> List[str]:
     generations = []
     for i in tqdm(range(0, len(instructions), batch_size)):
-        toks = tokenize_instructions_fn(instructions=instructions[i:i+batch_size])
+        toks = tokenize_instructions_fn(instructions=instructions[i:i + batch_size])
         generation = _generate_with_hooks(
             model,
             toks,
@@ -203,7 +212,6 @@ def get_generations(
         )
         generations.extend(generation)
     return generations
-
 
 
 def flush():
@@ -215,7 +223,8 @@ def flush():
         del harmful_logits
     except Exception:
         pass
-    gc.collect(); torch.cuda.empty_cache()
+    gc.collect();
+    torch.cuda.empty_cache()
 
 
 harmful = {}
@@ -230,7 +239,7 @@ toks = tokenize_instructions_fn(instructions=harmful_inst_train[:N_INST_TRAIN] +
 print(N_INST_TRAIN)
 harmful_toks, harmless_toks = toks.split(N_INST_TRAIN)
 
-batch_size = 12 # adjust this based on available VRAM
+batch_size = 12  # adjust this based on available VRAM
 
 for i in tqdm(range(0, N_INST_TRAIN // batch_size + (N_INST_TRAIN % batch_size > 0))):
     id = i * batch_size
@@ -292,20 +301,25 @@ activation_refusals = torch.load('refusal_dirs.pth')
 refusal_dirs = activation_refusals
 
 # Get all calculated potential refusal dirs, sort them in Descending order (reverse) based on their mean()
-activation_layers = ['resid_pre', 'resid_mid', 'resid_post'] # you can use a subset of these if you don't think certain activations are promising
+activation_layers = ['resid_pre', 'resid_mid',
+                     'resid_post']  # you can use a subset of these if you don't think certain activations are promising
 
-activation_layers = ['resid_pre'] # this is usually good enough, though if you've got the compute to spare...
-activation_scored = sorted([activation_refusals[layer][l-1] for l in range(1,model.cfg.n_layers) for layer in activation_layers], key = lambda x: abs(x.mean()), reverse=True)
+activation_layers = ['resid_pre']  # this is usually good enough, though if you've got the compute to spare...
+activation_scored = sorted(
+    [activation_refusals[layer][l - 1] for l in range(1, model.cfg.n_layers) for layer in activation_layers],
+    key=lambda x: abs(x.mean()), reverse=True)
+
 
 def direction_ablation_hook(
-    activation: Float[Tensor, "... d_act"],
-    hook: HookPoint,
-    direction: Float[Tensor, "d_act"]
+        activation: Float[Tensor, "... d_act"],
+        hook: HookPoint,
+        direction: Float[Tensor, "d_act"]
 ):
     if activation.device != direction.device:
         direction = direction.to(activation.device)
     proj = einops.einsum(activation, direction.view(-1, 1), '... d_act, d_act single -> ... single') * direction
     return activation - proj
+
 
 N_INST_TEST = 4
 baseline_generations = get_generations(model, harmful_inst_test[:N_INST_TEST], tokenize_instructions_fn, fwd_hooks=[])
@@ -327,25 +341,30 @@ for refusal_dir in tqdm(activation_scored[:EVAL_N]):
                                                fwd_hooks=fwd_hooks)
     evals.append(intervention_generations)
 
-    print(intervention_generations) # if you want to watch it as it goes
+    print(intervention_generations)  # if you want to watch it as it goes
 
 for instruction in range(N_INST_TEST):
     if 'baseline_generations' in locals() and baseline_generations and len(baseline_generations) > instruction:
         print(f"INSTRUCTION {instruction}: {repr(harmful_inst_test[instruction])}")
         print(Fore.GREEN + f"BASELINE COMPLETION:")
-        print(textwrap.fill(repr(baseline_generations[instruction]), width=100, initial_indent='\t', subsequent_indent='\t'))
+        print(textwrap.fill(repr(baseline_generations[instruction]), width=100, initial_indent='\t',
+                            subsequent_indent='\t'))
     for layer_candidate in range(EVAL_N):
         if len(evals) > layer_candidate and len(evals[layer_candidate]) > instruction:
             print(Fore.RED + f"LAYER CANDIDATE #{layer_candidate} INTERVENTION COMPLETION:")
-            print(textwrap.fill(repr(evals[layer_candidate][instruction]), width=100, initial_indent='\t', subsequent_indent='\t'))
+            print(textwrap.fill(repr(evals[layer_candidate][instruction]), width=100, initial_indent='\t',
+                                subsequent_indent='\t'))
     print(Fore.RESET)
 
-layer_candidate = 8 # e.g. you should choose based on the layer you think aligns to the behavior you like
+layer_candidate = 8  # e.g. you should choose based on the layer you think aligns to the behavior you like
 refusal_dir = activation_scored[layer_candidate]
 
-def get_orthogonalized_matrix(matrix: Float[Tensor, '... d_model'], vec: Float[Tensor, 'd_model']) -> Float[Tensor, '... d_model']:
+
+def get_orthogonalized_matrix(matrix: Float[Tensor, '... d_model'], vec: Float[Tensor, 'd_model']) -> Float[
+    Tensor, '... d_model']:
     proj = einops.einsum(matrix, vec.view(-1, 1), '... d_model, d_model single -> ... single') * vec
     return matrix - proj
+
 
 if refusal_dir.device != model.W_E.device:
     refusal_dir = refusal_dir.to(model.W_E.device)
@@ -358,9 +377,10 @@ for block in tqdm(model.blocks):
     block.mlp.W_out.data = get_orthogonalized_matrix(block.mlp.W_out, refusal_dir)
 
 # save your refusal_dir of choice separately to a file
-torch.save(refusal_dir,"ablation.pth")
+torch.save(refusal_dir, "ablation.pth")
 
-orthogonalized_generations = get_generations(model, harmful_inst_test[:N_INST_TEST], tokenize_instructions_fn, fwd_hooks=[])
+orthogonalized_generations = get_generations(model, harmful_inst_test[:N_INST_TEST], tokenize_instructions_fn,
+                                             fwd_hooks=[])
 
 for i in range(N_INST_TEST):
     if 'baseline_generations' in locals() and baseline_generations and len(baseline_generations) > i:
@@ -380,13 +400,16 @@ cfg = model.cfg
 
 state_dict = model.state_dict()
 
-hf_model = AutoModelForCausalLM.from_pretrained(MODEL_PATH,torch_dtype=torch.bfloat16) # load the original model as a regular unhooked Transformer -- don't need to load it into GPU as it's just for saving
+hf_model = AutoModelForCausalLM.from_pretrained(MODEL_PATH,
+                                                torch_dtype=torch.bfloat16)  # load the original model as a regular unhooked Transformer -- don't need to load it into GPU as it's just for saving
 lm_model = hf_model.model
 
 lm_model.embed_tokens.weight = torch.nn.Parameter(state_dict["embed.W_E"].cpu())
 
 for l in range(cfg.n_layers):
-    lm_model.layers[l].self_attn.o_proj.weight = torch.nn.Parameter(einops.rearrange(state_dict[f"blocks.{l}.attn.W_O"], "n h m->m (n h)", n=cfg.n_heads).contiguous())
-    lm_model.layers[l].mlp.down_proj.weight = torch.nn.Parameter(torch.transpose(state_dict[f"blocks.{l}.mlp.W_out"],0,1).contiguous())
+    lm_model.layers[l].self_attn.o_proj.weight = torch.nn.Parameter(
+        einops.rearrange(state_dict[f"blocks.{l}.attn.W_O"], "n h m->m (n h)", n=cfg.n_heads).contiguous())
+    lm_model.layers[l].mlp.down_proj.weight = torch.nn.Parameter(
+        torch.transpose(state_dict[f"blocks.{l}.mlp.W_out"], 0, 1).contiguous())
 
 hf_model.save_pretrained("./cogvlm-abliterated/")

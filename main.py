@@ -358,22 +358,25 @@ class RedoMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
 
-    @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary, custom_id="maw-redo")
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="...")
         if isinstance(interaction.channel, discord.DMChannel):
             config = read_config("./servers/" + str(interaction.channel.id))
         else:
             config = read_config("./servers/" + str(interaction.guild.id))
         character = MawCharacter("Maw", config, True)
         history = character.read_history()
-        try:
-            character.write_history(history[:-1])
-        except:
-            pass
-        model_queue.append(
-            CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
-                         user_message=None))
+        if int(history[-1].message_id.split("-")[0]) == interaction.message.id:
+            try:
+                character.write_history(history[:-1])
+            except:
+                pass
+            await interaction.response.edit_message(content="...")
+            model_queue.append(
+                CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
+                             user_message=None))
+        else:
+            await interaction.response.edit_message(view=None)
 
 
 # this class is only used by characters
@@ -392,21 +395,23 @@ class EditAndRedoMessageButton(discord.ui.View):
 
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary, custom_id="redo-edit-and-redo-message")
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        # redo button should NOT be persistent until a check for the last message is added
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
         character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.edit_message(content="...")
             history = character.read_history()
-            try:
-                character.write_history(history[:-1])
-            except:
-                pass
-            model_queue.append(
-                CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
-                             user_message=None))
+            if history[-1].message_id == interaction.message.id:
+                try:
+                    character.write_history(history[:-1])
+                except:
+                    pass
+                await interaction.response.edit_message(content="...")
+                model_queue.append(
+                    CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
+                                 user_message=None))
+            else:
+                await interaction.response.edit_message(view=None)
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-and-redo-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -688,7 +693,8 @@ def message_updater(message, streamer, character, thread, channel):
                                 new_ping = "<@" + str(member.id) + ">"
                             elif member.nick and ping == member.nick.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
-                            elif member.global_name and len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                            elif member.global_name and len(
+                                    ping) > ping_cutoff and ping in member.global_name.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
                             elif member.global_name and ping == member.global_name.lower().strip():
                                 new_ping = "<@" + str(member.id) + ">"
@@ -705,7 +711,8 @@ def message_updater(message, streamer, character, thread, channel):
                                     new_ping = "<@" + str(member.id) + ">"
                                 elif member.nick and ping == member.nick.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
-                                elif member.global_name and len(ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                                elif member.global_name and len(
+                                        ping) > ping_cutoff and ping in member.global_name.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
                                 elif member.global_name and ping == member.globalname.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
@@ -836,6 +843,7 @@ async def on_ready():
     client.add_view(EditEnvironmentButton())
     client.add_view(EditAndRedoMessageButton())
     client.add_view(EditMessageButton())
+    client.add_view(RedoMessageButton())
 
 
 @client.event
@@ -899,9 +907,11 @@ async def on_message(message):
                         await message.channel.send("Failed to set new avatar!")
                     else:
                         try:
-                            config = read_config("./characters/" + str(message.guild.id) + "/" + str(avatar_interaction.message.thread.id))
+                            config = read_config("./characters/" + str(message.guild.id) + "/" + str(
+                                avatar_interaction.message.thread.id))
                             config.avatar = new_avatar.attachments[0].url
-                            make_maw_character("./characters/" + str(message.guild.id) + "/" + str(avatar_interaction.message.thread.id),
+                            make_maw_character("./characters/" + str(message.guild.id) + "/" + str(
+                                avatar_interaction.message.thread.id),
                                                config)
                             await message.channel.send("New avatar set")
                         except:
@@ -913,6 +923,8 @@ async def on_message(message):
         relative_path = "./servers/" + str(message.channel.id) if dm else "./servers/" + str(message.guild.id)
         if os.path.isdir(relative_path):
             config = read_config(relative_path)
+            if not isinstance(message.channel, discord.DMChannel):
+                config.system_prompt = config.system_prompt + message.guild.name + " in channel " + message.channel.name
             character = MawCharacter("Maw", config, True)
             if os.path.isfile(relative_path + "/history.txt"):
                 history = character.read_history()
@@ -931,9 +943,7 @@ async def on_message(message):
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
             if not isinstance(message.channel, discord.DMChannel):
-                print("adding channel and server")
                 config.system_prompt = config.system_prompt + message.guild.name + " in channel " + message.channel.name
-                print(config.system_prompt)
             character = MawCharacter("Maw", config, True)
         #history = character.read_history()
         #history.append(MawCharacterMessage(message.content, str(message.id), "user"))
