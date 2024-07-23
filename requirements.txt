@@ -1,6 +1,6 @@
 nextcord
-transformers
-accelerate
+git+https://github.com/huggingface/transformers
+accelerate>0.32.1
 python-dotenv
 torch
 setuptools
@@ -13,3 +13,5 @@ colorama
 torchvision
 triton
 xformers
+fbgemm-gpu
+hqq

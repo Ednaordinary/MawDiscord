@@ -5,13 +5,14 @@ import re
 import sys
 import nextcord as discord
 from dotenv import load_dotenv
-from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokenizer
+from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokenizer, HqqConfig
 import time
 import torch
 import threading
 import asyncio
 from typing import Optional
 import vram
+from hqq.utils.patching import prepare_for_inference
 
 model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matching_ngram_size=2,
                   prompt_lookup_num_tokens=15, repetition_penalty=1.2)  # PR isnt merged but including in readme
@@ -780,6 +781,8 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
+                # group_size=64, quant_zero=False, quant_scale=False,
+                quant_config  = HqqConfig(nbits=4, axis=1, quant_zero=False, quant_scale=False, compute_dtype=torch.bfloat16)
                 model = AutoModelForCausalLM.from_pretrained(
                     "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
                     #"cogvlm-abliterated",
@@ -788,8 +791,9 @@ async def async_watcher():
                     torch_dtype=torch.bfloat16,
                     low_cpu_mem_usage=True,
                     attn_implementation="flash_attention_2",
-                    load_in_8bit=False,
+                    quantization_config=quant_config,
                 )
+                prepare_for_inference(model, backend="torchao_int4")
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
