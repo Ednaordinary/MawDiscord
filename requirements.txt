@@ -15,3 +15,5 @@ triton
 xformers
 fbgemm-gpu
 hqq
+git+https://github.com/IST-DASLab/marlin
+git+https://github.com/NetEase-FuXi/EETQ.git

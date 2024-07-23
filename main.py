@@ -787,11 +787,10 @@ async def async_watcher():
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
                 # group_size=64, quant_zero=False, quant_scale=False,
-                quant_config  = HqqConfig(nbits=2, axis=1, group_size=64, quant_zero=False, quant_scale=False, compute_dtype=torch.bfloat16)
+                quant_config  = HqqConfig(nbits=2, axis=0, group_size=16, quant_zero=True, quant_scale=True, offload_meta=True, compute_dtype=torch.bfloat16)
                 model = AutoModelForCausalLM.from_pretrained(
                     #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
                     "failspy/llama-3-70B-Instruct-abliterated",
-                    offload_meta=True,
                     #local_files_only=True,
                     device_map="cuda",
                     torch_dtype=torch.bfloat16,
@@ -801,6 +800,8 @@ async def async_watcher():
                     quantization_config=quant_config,
                 )
                 #prepare_for_inference(model, backend="torchao_int4")
+                prepare_for_inference(model, backend="marlin", allow_merge=True)
+                model.eval()
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
