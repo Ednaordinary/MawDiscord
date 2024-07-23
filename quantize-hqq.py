@@ -8,7 +8,7 @@ quant_config = HqqConfig(nbits=2, axis=1, group_size=64, quant_zero=False, quant
                          compute_dtype=torch.bfloat16)
 model = AutoModelForCausalLM.from_pretrained(
     # "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-    "failspy/llama-3-70B-Instruct-abliterated",
+    "failspy/Meta-Llama-3-70B-Instruct-abliterated-v3.5",
     offload_meta=True,
     # local_files_only=True,
     device_map="cuda",

@@ -12,11 +12,9 @@ import threading
 import asyncio
 from typing import Optional
 import vram
-from hqq.utils.patching import prepare_for_inference
-from hqq.utils.generation_hf import HFGenerator
 
 model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, max_matching_ngram_size=2,
-                  prompt_lookup_num_tokens=15, repetition_penalty=1.2)  # PR isnt merged but including in readme
+                  prompt_lookup_num_tokens=20, repetition_penalty=1.2)  # PR isnt merged but including in readme
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -674,15 +672,12 @@ def message_updater(message, streamer, character, thread, channel):
         print(text, flush=True, end='')
         full_text = full_text + text
         if character.maw and not isinstance(channel, discord.DMChannel):
-            images = re.findall(r"<-[\S\s]+>", full_text)
+            images = re.findall(r"<-[\S\s]+->", full_text)
             if images != None:
                 with open("../DanteMode/queue.txt", "a") as image_queue:
                     for image in images:
                         full_text = full_text.replace(image, "")
-                        if image[-2] == "-":
-                            image = image[2:-2]
-                        else:
-                            image = image[2:-1]
+                        image = image[2:-2]
                         image_queue.write("\n" + str(channel.id) + "|" + image.replace("\n", "\\n"))
             pings = re.findall(r"\|+[\S\s]+\|", full_text)
             if pings != None:
@@ -787,20 +782,21 @@ async def async_watcher():
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
                 # group_size=64, quant_zero=False, quant_scale=False,
-                quant_config  = HqqConfig(nbits=2, axis=0, group_size=16, quant_zero=True, quant_scale=True, offload_meta=True, compute_dtype=torch.bfloat16)
-                model = AutoModelForCausalLM.from_pretrained(
-                    #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-                    "failspy/llama-3-70B-Instruct-abliterated",
-                    #local_files_only=True,
-                    device_map="cuda",
-                    torch_dtype=torch.bfloat16,
-                    low_cpu_mem_usage=True,
-                    #attn_implementation="flash_attention_2",
-                    attn_implementation="sdpa",
-                    quantization_config=quant_config,
-                )
+                #quant_config  = HqqConfig(nbits=2, axis=0, group_size=16, quant_zero=True, quant_scale=True, offload_meta=True, compute_dtype=torch.bfloat16)
+                # model = AutoModelForCausalLM.from_pretrained(
+                #     #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                #     "failspy/Meta-Llama-3-70B-Instruct-abliterated-v3.5",
+                #     #local_files_only=True,
+                #     device_map="cuda",
+                #     torch_dtype=torch.bfloat16,
+                #     low_cpu_mem_usage=True,
+                #     attn_implementation="flash_attention_2",
+                #     #attn_implementation="sdpa",
+                #     quantization_config=quant_config,
+                # )
                 #prepare_for_inference(model, backend="torchao_int4")
-                prepare_for_inference(model, backend="marlin", allow_merge=True)
+                #prepare_for_inference(model, backend="marlin", allow_merge=True)
+                model = AutoModelForCausalLM.from_pretrained("llama-3-8b-8nbits-eetq", local_files_only=True, device_map="cuda", low_cpu_mem_usage=True, attn_implementation="flash_attention_2")
                 model.eval()
             gc.collect()
             torch.cuda.empty_cache()
@@ -820,7 +816,8 @@ async def async_watcher():
                                                      thread, channel])
             streamer_thread.start()
             start_time = time.time()
-            response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
+            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
+                response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
                                       eos_token_id=stop_token)
             all_tokens += len(response[0][model_input.shape[1]:])
             all_time += time.time() - start_time
@@ -950,7 +947,7 @@ async def on_message(message):
                 system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to " + (
                     message.author.global_name if message.author.global_name else message.author.name)
             else:
-                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '>', like this: <-prompt>. Do not make ASCII art or just describe the image without enclosing it unless specifically stated, and remember to always start image prompts with <- and end them with >. To ping users, enclose either their name or ID in '|+' and '|', like this: |+Edna|. Do not extend the users name, use the exact name you are given. You are talking in a server named "
+                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '->', like this: <-prompt->. Do not make ASCII art or just describe the image without enclosing it unless specifically stated. Do not make images unless asked. To ping users, enclose either their name or ID in '|+' and '|', like this: |+Edna|. Do not extend the users name, use the exact name you are given. You are talking in a server named "
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
