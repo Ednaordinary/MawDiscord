@@ -16,3 +16,4 @@ xformers
 fbgemm-gpu
 hqq
 quanto
+llama-cpp-python
