@@ -627,9 +627,9 @@ def history_to_llama(history, tokenizer, config):
         environment_prompt = tokenizer.apply_chat_template(
             conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + llama_message.shape[1] < (14000 - system_prompt.shape[1]):
+        if token_length + environment_prompt.shape[1] < (14000 - system_prompt.shape[1]):
             llama.append(environment_prompt)
-            token_length += llama_message.shape[1]
+            token_length += environment_prompt.shape[1]
     llama.append(system_prompt)
     llama.reverse()
     history.reverse()  # this was inplace so it needs to be flipped back
@@ -726,7 +726,7 @@ def message_updater(message, streamer, character, thread, channel):
                                 elif member.global_name and len(
                                         ping) > ping_cutoff and ping in member.global_name.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
-                                elif member.global_name and ping == member.globalname.lower().strip():
+                                elif member.global_name and ping == member.global_name.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
                                 elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
                                     new_ping = "<@" + str(member.id) + ">"
