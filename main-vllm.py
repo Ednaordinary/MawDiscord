@@ -31,6 +31,8 @@ os.environ["TOKENIZERS_PARALLELISM"]  = "1"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+model_args = SamplingParams(repetition_penalty=1.1, temperature=0.6, top_k=0.9, max_tokens=768)
+
 # this class is only used by characters
 class CharacterModal(discord.ui.Modal):
     def __init__(self, avatar, locked):
@@ -774,7 +776,7 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
-                model = model = LLM(model="failspy/Meta-Llama-3-8B-Instruct-abliterated-v3", speculative_model="[ngram]", num_speculative_tokens=15, ngram_prompt_lookup_max=4, quantization="fp8", use_v2_block_manager=True)
+                model = LLM(model="llama-3.1-8b-fp8", speculative_model="[ngram]", num_speculative_tokens=15, ngram_prompt_lookup_max=4, use_v2_block_manager=True)
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -782,20 +784,21 @@ async def async_watcher():
                 history.append(current_gen.user_message)
                 current_gen.character.write_history(
                     history)  # if message is edited or deleted during generation, it needs to be reflected
-            #model_input = history_to_llama(history, tokenizer, current_gen.character.config)
+            model_input = history_to_llama(history, model.get_tokenizer(), current_gen.character.config).to('cuda')
             #streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-            if isinstance(current_gen.thread, discord.Thread):
-                thread, channel = current_gen.thread, current_gen.thread.parent
-            else:
-                thread, channel = None, current_gen.thread
-            streamer_thread = threading.Thread(target=message_updater,
-                                               args=[current_gen.character_message, streamer, current_gen.character,
-                                                     thread, channel])
-            streamer_thread.start()
+            # if isinstance(current_gen.thread, discord.Thread):
+            #     thread, channel = current_gen.thread, current_gen.thread.parent
+            # else:
+            #     thread, channel = None, current_gen.thread
+            # streamer_thread = threading.Thread(target=message_updater,
+            #                                    args=[current_gen.character_message, streamer, current_gen.character,
+            #                                          thread, channel])
+            # streamer_thread.start()
             start_time = time.time()
             with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
-                response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                                      eos_token_id=stop_token)
+                #response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
+                #                      eos_token_id=stop_token)
+                response = model.generate(model_input, sampling_params=model_args)
             all_tokens += len(response[0][model_input.shape[1]:])
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(

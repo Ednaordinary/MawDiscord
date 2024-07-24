@@ -16,7 +16,7 @@ model = AutoFP8ForCausalLM.from_pretrained(
     quantize_config=quant_config,
 )
 model.quantize(examples)
-model.save_quantized("llama-3-8b-fp8")
+model.save_quantized("llama-3.1-8b-fp8")
 messages = [
     {"role": "system", "content": "You are Maw, a chatbot by Mode LLC."},
     {"role": "user", "content": "Who are you?"},
