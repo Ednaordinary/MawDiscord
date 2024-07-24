@@ -14,9 +14,9 @@ from typing import Optional
 import vram
 
 #max_matching_ngram_size=2, prompt_lookup_num_tokens=20,
-model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, repetition_penalty=1.2,
-                  cache_implementation="quantized",
-                  cache_config={"backend": "quanto", "nbits": 4})  # PR isnt merged but including in readme
+model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, repetition_penalty=1.2) # , max_matching_ngram_size=2, prompt_lookup_num_tokens=20
+                  #cache_implementation="quantized",
+                  #cache_config={"backend": "quanto", "nbits": 4})
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -408,7 +408,7 @@ class EditAndRedoMessageButton(discord.ui.View):
             await interaction.response.pong()
         else:
             history = character.read_history()
-            if history[-1].message_id == interaction.message.id:
+            if int(history[-1].message_id) == interaction.message.id:
                 try:
                     character.write_history(history[:-1])
                 except:
@@ -418,6 +418,9 @@ class EditAndRedoMessageButton(discord.ui.View):
                     CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
                                  user_message=None))
             else:
+                print()
+                print(history[-1].message_id, history[-1].content)
+                print(interaction.message.id, interaction.message.content)
                 await interaction.response.edit_message(view=None)
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-and-redo-message")
@@ -615,7 +618,7 @@ def history_to_llama(history, tokenizer, config):
         llama_message = [{"role": role, "content": message.content}]
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
-        if token_length + llama_message.shape[1] < (32000 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (14000 - system_prompt.shape[1]):
             llama.append(llama_message)
             token_length += llama_message.shape[1]
         else:
@@ -624,7 +627,7 @@ def history_to_llama(history, tokenizer, config):
         environment_prompt = tokenizer.apply_chat_template(
             conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + llama_message.shape[1] < (32000 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (14000 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += llama_message.shape[1]
     llama.append(system_prompt)
@@ -632,7 +635,7 @@ def history_to_llama(history, tokenizer, config):
     history.reverse()  # this was inplace so it needs to be flipped back
     llama = torch.cat(llama, 1)
     print(token_length, llama.shape)
-    return llama
+    return llama, token_length
 
 
 async def edit_add_redobutton(message, content):
@@ -805,12 +808,12 @@ async def async_watcher():
                 #prepare_for_inference(model, backend="torchao_int4")
                 #prepare_for_inference(model, backend="marlin", allow_merge=True)
                 #model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True, device_map="cuda", low_cpu_mem_usage=True, attn_implementation="flash_attention_2")
-                # model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True,
-                #                                              device_map="cuda", low_cpu_mem_usage=True,
-                #                                              attn_implementation="flash_attention_2")
-                model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", local_files_only=True,
+                model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True,
                                                              device_map="cuda", low_cpu_mem_usage=True,
                                                              attn_implementation="flash_attention_2")
+                # model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", local_files_only=True,
+                #                                              device_map="cuda", low_cpu_mem_usage=True, torch_dtype=torch.bfloat16,
+                #                                              attn_implementation="flash_attention_2")
                 model.eval()
             gc.collect()
             torch.cuda.empty_cache()
@@ -819,7 +822,7 @@ async def async_watcher():
                 history.append(current_gen.user_message)
                 current_gen.character.write_history(
                     history)  # if message is edited or deleted during generation, it needs to be reflected
-            model_input = history_to_llama(history, tokenizer, current_gen.character.config)
+            model_input, token_length = history_to_llama(history, tokenizer, current_gen.character.config)
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             if isinstance(current_gen.thread, discord.Thread):
                 thread, channel = current_gen.thread, current_gen.thread.parent
@@ -830,9 +833,14 @@ async def async_watcher():
                                                      thread, channel])
             streamer_thread.start()
             start_time = time.time()
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
+            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True):
+                # if token_length > 6200:
+                #     print("using quantized cache")
+                #     response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
+                #                               eos_token_id=stop_token, cache_implementation = "quantized", cache_config={"backend": "quanto", "nbits": 4})
+                # else:
                 response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                                          eos_token_id=stop_token)
+                                        eos_token_id=stop_token)
             all_tokens += len(response[0][model_input.shape[1]:])
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
