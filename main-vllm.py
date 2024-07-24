@@ -13,6 +13,7 @@ import threading
 import asyncio
 from typing import Optional
 import vram
+from random import randint
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -30,8 +31,6 @@ os.environ["OMP_NUM_THREADS"]  = "16"
 os.environ["TOKENIZERS_PARALLELISM"]  = "1"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
-
-model_args = SamplingParams(repetition_penalty=1.1, temperature=0.6, top_p=0.9, max_tokens=768)
 
 # this class is only used by characters
 class CharacterModal(discord.ui.Modal):
@@ -405,7 +404,7 @@ class EditAndRedoMessageButton(discord.ui.View):
             await interaction.response.pong()
         else:
             history = character.read_history()
-            if history[-1].message_id == interaction.message.id:
+            if int(history[-1].message_id) == interaction.message.id:
                 try:
                     character.write_history(history[:-1])
                 except:
@@ -415,6 +414,9 @@ class EditAndRedoMessageButton(discord.ui.View):
                     CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
                                  user_message=None))
             else:
+                print()
+                print(history[-1].message_id, history[-1].content)
+                print(interaction.message.id, interaction.message.content)
                 await interaction.response.edit_message(view=None)
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-and-redo-message")
@@ -621,7 +623,7 @@ def history_to_llama(history, tokenizer, config):
         environment_prompt = tokenizer.apply_chat_template(
             conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + environment_prompt.shape[1] < (12000 - system_prompt.shape[1]):
+        if token_length + environment_prompt.shape[1] < (42000 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += environment_prompt.shape[1]
     llama.append(system_prompt)
@@ -700,7 +702,7 @@ async def async_watcher():
                 print("memory allocated, loading model")
                 #
                 # , quantization="fp8"
-                model = LLM(model="meta-llama/Meta-Llama-3.1-8B-Instruct", use_v2_block_manager=True, max_model_len=120000, enforce_eager=True, gpu_memory_utilization=0.9, cpu_offload_gb=10, swap_space=0) # , num_speculative_tokens=20, ngram_prompt_lookup_max=2, speculative_model="[ngram]"
+                model = LLM(model="meta-llama/Meta-Llama-3.1-8B-Instruct", use_v2_block_manager=True, max_model_len=42000, enforce_eager=True, gpu_memory_utilization=0.9, swap_space=4) # , num_speculative_tokens=20, ngram_prompt_lookup_max=2, speculative_model="[ngram]"
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -728,6 +730,10 @@ async def async_watcher():
             character = current_gen.character
             tokens = 0
             limiter = time.time()
+            # model args must be set each time otherwise the seed does not change
+            model_args = SamplingParams(n=1, best_of=10, repetition_penalty=1.1, temperature=0.6, top_p=0.9,
+                                        max_tokens=768, min_tokens=2, skip_special_tokens=True,
+                                        seed=randint(1, 10000000))
             for i in model.generate(model_input, sampling_params=model_args, stream=True):
                 all_tokens += 1
                 tokens += 1
@@ -745,21 +751,6 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(
                             coro=temp_edit(message.id, thread, response, channel.id),
                             loop=client.loop)
-            if character.maw:
-                if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
-                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, response),
-                                                     loop=client.loop)
-                else:
-                    asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
-            else:
-                if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
-                    asyncio.run_coroutine_threadsafe(
-                        coro=edit_add_hookredobutton(hook_list[channel.id], message, response,
-                                                     thread), loop=client.loop)
-                else:
-                    asyncio.run_coroutine_threadsafe(
-                        coro=edit_add_hookeditbutton(hook_list[channel.id], message, response,
-                                                     thread), loop=client.loop)
             if character.maw and not isinstance(channel, discord.DMChannel):
                 images = re.findall(r"<-[\S\s]+->", response)
                 if images != None:
@@ -814,6 +805,21 @@ async def async_watcher():
                                     elif ping == member.name.lower().strip():
                                         new_ping = "<@" + str(member.id) + ">"
                         response = response.replace(old_ping, new_ping)
+            if character.maw:
+                if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
+                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, response),
+                                                     loop=client.loop)
+                else:
+                    asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+            else:
+                if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
+                    asyncio.run_coroutine_threadsafe(
+                        coro=edit_add_hookredobutton(hook_list[channel.id], message, response,
+                                                     thread), loop=client.loop)
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        coro=edit_add_hookeditbutton(hook_list[channel.id], message, response,
+                                                     thread), loop=client.loop)
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
                 activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(

@@ -767,7 +767,7 @@ async def async_watcher():
         #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
         "meta-llama/Meta-Llama-3.1-8B-Instruct"
     )  # can just be kept loaded
-    stop_token = tokenizer.encode("<|eot_id|>")
+    stop_token = tokenizer.encode("<|eot_id|>")[0]
     while True:
         if model_queue == []:
             if model != None:
