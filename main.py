@@ -764,10 +764,10 @@ async def async_watcher():
     global model_queue
     model = None
     tokenizer = AutoTokenizer.from_pretrained(
-        #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-        "meta-llama/Meta-Llama-3.1-8B-Instruct"
+        "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+        #"meta-llama/Meta-Llama-3.1-8B-Instruct"
     )  # can just be kept loaded
-    stop_token = tokenizer.encode("<|eot_id|>")[0]
+    stop_token = tokenizer.encode("<|eot_id|>")
     while True:
         if model_queue == []:
             if model != None:
@@ -794,23 +794,21 @@ async def async_watcher():
                 print("memory allocated, loading model")
                 # group_size=64, quant_zero=False, quant_scale=False,
                 #quant_config  = HqqConfig(nbits=2, axis=0, group_size=16, quant_zero=True, quant_scale=True, offload_meta=True, compute_dtype=torch.bfloat16)
-                # model = AutoModelForCausalLM.from_pretrained(
-                #     #"failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-                #     "failspy/Meta-Llama-3-70B-Instruct-abliterated-v3.5",
-                #     #local_files_only=True,
-                #     device_map="cuda",
-                #     torch_dtype=torch.bfloat16,
-                #     low_cpu_mem_usage=True,
-                #     attn_implementation="flash_attention_2",
-                #     #attn_implementation="sdpa",
-                #     quantization_config=quant_config,
-                # )
+                model = AutoModelForCausalLM.from_pretrained(
+                    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
+                    #local_files_only=True,
+                    device_map="cuda",
+                    torch_dtype=torch.bfloat16,
+                    low_cpu_mem_usage=True,
+                    attn_implementation="flash_attention_2",
+                    #quantization_config=quant_config,
+                )
                 #prepare_for_inference(model, backend="torchao_int4")
                 #prepare_for_inference(model, backend="marlin", allow_merge=True)
                 #model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True, device_map="cuda", low_cpu_mem_usage=True, attn_implementation="flash_attention_2")
-                model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True,
-                                                             device_map="cuda", low_cpu_mem_usage=True,
-                                                             attn_implementation="flash_attention_2")
+                # model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True,
+                #                                              device_map="cuda", low_cpu_mem_usage=True,
+                #                                              attn_implementation="flash_attention_2")
                 # model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", local_files_only=True,
                 #                                              device_map="cuda", low_cpu_mem_usage=True, torch_dtype=torch.bfloat16,
                 #                                              attn_implementation="flash_attention_2")
