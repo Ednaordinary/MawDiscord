@@ -5,18 +5,15 @@ import re
 import sys
 import nextcord as discord
 from dotenv import load_dotenv
-from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokenizer, HqqConfig
+#from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokenizer, HqqConfig
+from vllm import LLM, SamplingParams
 import time
 import torch
 import threading
 import asyncio
 from typing import Optional
 import vram
-
-#max_matching_ngram_size=2, prompt_lookup_num_tokens=20,
-model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, repetition_penalty=1.2) # , max_matching_ngram_size=2, prompt_lookup_num_tokens=20
-                  #cache_implementation="quantized",
-                  #cache_config={"backend": "quanto", "nbits": 4})
+from random import randint
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -618,7 +615,7 @@ def history_to_llama(history, tokenizer, config):
         llama_message = [{"role": role, "content": message.content}]
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
-        if token_length + llama_message.shape[1] < (14000 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (7900 - system_prompt.shape[1]):
             llama.append(llama_message)
             token_length += llama_message.shape[1]
         else:
@@ -627,7 +624,7 @@ def history_to_llama(history, tokenizer, config):
         environment_prompt = tokenizer.apply_chat_template(
             conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + environment_prompt.shape[1] < (14000 - system_prompt.shape[1]):
+        if token_length + environment_prompt.shape[1] < (7900 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += environment_prompt.shape[1]
     llama.append(system_prompt)
@@ -635,7 +632,9 @@ def history_to_llama(history, tokenizer, config):
     history.reverse()  # this was inplace so it needs to be flipped back
     llama = torch.cat(llama, 1)
     print(token_length, llama.shape)
-    return llama, token_length
+    llama = str([tokenizer.decode(x, skip_special_tokens=False) for x in llama])
+    print(llama)
+    return llama
 
 
 async def edit_add_redobutton(message, content):
@@ -668,94 +667,10 @@ async def get_webhook(channel):
 
 
 async def temp_edit(message_id, thread_id, content, channel_id):
-    await hook_list[channel_id].edit_message(message_id=message_id, content=content, thread=thread_id)
-
-
-def message_updater(message, streamer, character, thread, channel):
-    full_text = ""
-    limiter = time.time()
-    for text in streamer:
-        print(text, flush=True, end='')
-        full_text = full_text + text
-        if character.maw and not isinstance(channel, discord.DMChannel):
-            images = re.findall(r"<-[\S\s]+>", full_text)
-            if images != None:
-                with open("../DanteMode/queue.txt", "a") as image_queue:
-                    for image in images:
-                        full_text = full_text.replace(image, "")
-                        image = image[2:-1]
-                        try:
-                            if image[-1] == "-":
-                                image = image[:-1]
-                        except:
-                            pass
-                        image_queue.write("\n" + str(channel.id) + "|" + image.replace("\n", "\\n"))
-            pings = re.findall(r"\|+[\S\s]+\|", full_text)
-            if pings != None:
-                for ping in pings:
-                    old_ping = ping
-                    ping = ping.lower().strip()[2:-1]
-                    new_ping = "No ping found. (" + ping + ")"
-                    ping_cutoff = 2
-                    try:
-                        int(ping)
-                    except:
-                        for member in channel.members:
-                            if member.nick and len(ping) > ping_cutoff and ping in member.nick.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif member.nick and ping == member.nick.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif member.global_name and len(
-                                    ping) > ping_cutoff and ping in member.global_name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif member.global_name and ping == member.global_name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif ping == member.name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                    else:
-                        if int(ping) in [x.id for x in channel.members]:
-                            new_ping = "<@" + str(ping) + ">"
-                        else:
-                            for member in channel.members:
-                                if member.nick and len(ping) > ping_cutoff and ping in member.nick.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif member.nick and ping == member.nick.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif member.global_name and len(
-                                        ping) > ping_cutoff and ping in member.global_name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif member.global_name and ping == member.global_name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif ping == member.name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                    full_text = full_text.replace(old_ping, new_ping)
-        if time.time() - limiter > 0.8:
-            limiter = time.time()
-            if character.maw:
-                asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
-            else:
-                asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread, full_text, channel.id),
-                                                 loop=client.loop)
-    global model_queue
-    if character.maw:
-        if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
-            asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text),
-                                             loop=client.loop)
-        else:
-            asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
-    else:
-        if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
-            asyncio.run_coroutine_threadsafe(
-                coro=edit_add_hookredobutton(hook_list[channel.id], message, full_text,
-                                             thread), loop=client.loop)
-        else:
-            asyncio.run_coroutine_threadsafe(
-                coro=edit_add_hookeditbutton(hook_list[channel.id], message, full_text,
-                                             thread), loop=client.loop)
+    try:
+        await hook_list[channel_id].edit_message(message_id=message_id, content=content, thread=thread_id)
+    except Exception as e:
+        print(repr(e))
 
 
 async def async_watcher():
@@ -763,11 +678,6 @@ async def async_watcher():
     global all_time
     global model_queue
     model = None
-    tokenizer = AutoTokenizer.from_pretrained(
-        "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-        #"meta-llama/Meta-Llama-3.1-8B-Instruct"
-    )  # can just be kept loaded
-    stop_token = tokenizer.encode("<|eot_id|>")
     while True:
         if model_queue == []:
             if model != None:
@@ -792,27 +702,11 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
-                # group_size=64, quant_zero=False, quant_scale=False,
-                #quant_config  = HqqConfig(nbits=2, axis=0, group_size=16, quant_zero=True, quant_scale=True, offload_meta=True, compute_dtype=torch.bfloat16)
-                model = AutoModelForCausalLM.from_pretrained(
-                    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-                    #local_files_only=True,
-                    device_map="cuda",
-                    torch_dtype=torch.bfloat16,
-                    low_cpu_mem_usage=True,
-                    attn_implementation="flash_attention_2",
-                    #quantization_config=quant_config,
-                )
-                #prepare_for_inference(model, backend="torchao_int4")
-                #prepare_for_inference(model, backend="marlin", allow_merge=True)
-                #model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True, device_map="cuda", low_cpu_mem_usage=True, attn_implementation="flash_attention_2")
-                # model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True,
-                #                                              device_map="cuda", low_cpu_mem_usage=True,
-                #                                              attn_implementation="flash_attention_2")
-                # model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", local_files_only=True,
-                #                                              device_map="cuda", low_cpu_mem_usage=True, torch_dtype=torch.bfloat16,
-                #                                              attn_implementation="flash_attention_2")
-                model.eval()
+                #
+                # , quantization="fp8"
+                #model = LLM(model="meta-llama/Meta-Llama-3.1-8B-Instruct", use_v2_block_manager=True, max_model_len=42000, enforce_eager=True, gpu_memory_utilization=0.9, swap_space=4) # , num_speculative_tokens=20, ngram_prompt_lookup_max=2, speculative_model="[ngram]"
+                model = LLM(model="failspy/Meta-Llama-3-8B-Instruct-abliterated-v3", use_v2_block_manager=True,
+                            max_model_len=8192, enforce_eager=True, gpu_memory_utilization=0.9, swap_space=4)
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -820,39 +714,129 @@ async def async_watcher():
                 history.append(current_gen.user_message)
                 current_gen.character.write_history(
                     history)  # if message is edited or deleted during generation, it needs to be reflected
-            model_input, token_length = history_to_llama(history, tokenizer, current_gen.character.config)
-            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+            model_input = history_to_llama(history, model.get_tokenizer(), current_gen.character.config)
+            #streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             if isinstance(current_gen.thread, discord.Thread):
                 thread, channel = current_gen.thread, current_gen.thread.parent
             else:
                 thread, channel = None, current_gen.thread
-            streamer_thread = threading.Thread(target=message_updater,
-                                               args=[current_gen.character_message, streamer, current_gen.character,
-                                                     thread, channel])
-            streamer_thread.start()
+            # streamer_thread = threading.Thread(target=message_updater,
+            #                                    args=[current_gen.character_message, streamer, current_gen.character,
+            #                                          thread, channel])
+            # streamer_thread.start()
             start_time = time.time()
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True):
-                # if token_length > 6200:
-                #     print("using quantized cache")
-                #     response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                #                               eos_token_id=stop_token, cache_implementation = "quantized", cache_config={"backend": "quanto", "nbits": 4})
-                # else:
-                response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                                        eos_token_id=stop_token)
-            all_tokens += len(response[0][model_input.shape[1]:])
+            #with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.FLASH_ATTENTION, torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION, torch.nn.attention.SDPBackend.MATH, torch.nn.attention.SDPBackend.CUDNN_ATTENTION]):
+            #response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
+            #                      eos_token_id=stop_token)
+            response = ""
+            response_no_skip = ""
+            message = current_gen.character_message
+            character = current_gen.character
+            tokens = 0
+            limiter = time.time()
+            # model args must be set each time otherwise the seed does not change
+            model_args = SamplingParams(n=1, best_of=5, repetition_penalty=1.3, temperature=0.6, top_p=0.9,
+                                        max_tokens=768, min_tokens=3, skip_special_tokens=True,
+                                        seed=randint(1, 10000000), top_k=50, min_p=0.1)
+            for i in model.generate(model_input, sampling_params=model_args, stream=True):
+                all_tokens += 1
+                tokens += 1
+                #def message_updater(message, streamer, character, thread, channel):
+                print(i)
+                response = i.outputs[0].text.replace(r"\n", "\n")
+                response_no_skip = i.outputs[0].text.replace(r"\n", "\n")
+                if time.time() - limiter > 0.8:
+                    limiter = time.time()
+                    print("editing", time.time() - limiter)
+                    if character.maw:
+                        asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+                    else:
+                        print(response)
+                        asyncio.run_coroutine_threadsafe(
+                            coro=temp_edit(message.id, thread, response, channel.id),
+                            loop=client.loop)
+            if character.maw and not isinstance(channel, discord.DMChannel):
+                images = re.findall(r"<-[\S\s]+->", response)
+                if images != None:
+                    with open("../DanteMode/queue.txt", "a") as image_queue:
+                        for image in images:
+                            response = response.replace(image, "")
+                            image = image[2:-2]
+                            image_queue.write("\n" + str(channel.id) + "|" + image.replace("\n", "\\n"))
+                pings = re.findall(r"\|+[\S\s]+\|", response)
+                if pings != None:
+                    for ping in pings:
+                        old_ping = ping
+                        ping = ping.lower().strip()[2:-1]
+                        new_ping = "No ping found. (" + ping + ")"
+                        ping_cutoff = 2
+                        try:
+                            int(ping)
+                        except:
+                            for member in channel.members:
+                                if member.nick and len(
+                                        ping) > ping_cutoff and ping in member.nick.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif member.nick and ping == member.nick.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif member.global_name and len(
+                                        ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif member.global_name and ping == member.global_name.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                                elif ping == member.name.lower().strip():
+                                    new_ping = "<@" + str(member.id) + ">"
+                        else:
+                            if int(ping) in [x.id for x in channel.members]:
+                                new_ping = "<@" + str(ping) + ">"
+                            else:
+                                for member in channel.members:
+                                    if member.nick and len(
+                                            ping) > ping_cutoff and ping in member.nick.lower().strip():
+                                        new_ping = "<@" + str(member.id) + ">"
+                                    elif member.nick and ping == member.nick.lower().strip():
+                                        new_ping = "<@" + str(member.id) + ">"
+                                    elif member.global_name and len(
+                                            ping) > ping_cutoff and ping in member.global_name.lower().strip():
+                                        new_ping = "<@" + str(member.id) + ">"
+                                    elif member.global_name and ping == member.global_name.lower().strip():
+                                        new_ping = "<@" + str(member.id) + ">"
+                                    elif len(
+                                            ping) > ping_cutoff and ping in member.name.lower().strip():
+                                        new_ping = "<@" + str(member.id) + ">"
+                                    elif ping == member.name.lower().strip():
+                                        new_ping = "<@" + str(member.id) + ">"
+                        response = response.replace(old_ping, new_ping)
+            if character.maw:
+                if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
+                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, response),
+                                                     loop=client.loop)
+                else:
+                    asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+            else:
+                if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
+                    asyncio.run_coroutine_threadsafe(
+                        coro=edit_add_hookredobutton(hook_list[channel.id], message, response,
+                                                     thread), loop=client.loop)
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        coro=edit_add_hookeditbutton(hook_list[channel.id], message, response,
+                                                     thread), loop=client.loop)
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
                 activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(
-                    round(len(response[0][model_input.shape[1]:]) / (time.time() - start_time), 2)) + " tps | " + str(
+                    round(tokens / (time.time() - start_time), 2)) + " tps | " + str(
                     round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.idle), loop=client.loop)
-            decoded_response = tokenizer.decode(response[0][model_input.shape[1]:], skip_special_tokens=True)
+            decoded_response = response
             if current_gen.character.maw:
-                history.append(MawCharacterMessage(decoded_response, (str(current_gen.character_message.id) + "-" + str(
+                history.append(MawCharacterMessage(response_no_skip, (str(current_gen.character_message.id) + "-" + str(
                     current_gen.character_message.channel.id)), "character"))
             else:
-                history.append(MawCharacterMessage(decoded_response, current_gen.character_message.id, "character"))
+                history.append(MawCharacterMessage(response_no_skip, current_gen.character_message.id, "character"))
             current_gen.character.write_history(history)
-            del response, decoded_response, model_input
+            del response, decoded_response, model_input, response_no_skip
             gc.collect()
             torch.cuda.empty_cache()
             model_queue.pop(0)
