@@ -27,10 +27,11 @@ client = discord.Client(intents=intents)
 all_tokens = 0
 all_time = 0
 
-os.environ["OMP_NUM_THREADS"]  = "16"
-os.environ["TOKENIZERS_PARALLELISM"]  = "1"
+os.environ["OMP_NUM_THREADS"] = "16"
+os.environ["TOKENIZERS_PARALLELISM"] = "1"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
 
 # this class is only used by characters
 class CharacterModal(discord.ui.Modal):
@@ -614,7 +615,7 @@ def history_to_llama(history, tokenizer, config):
         llama_message = [{"role": role, "content": message.content}]
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
-        if token_length + llama_message.shape[1] < (12000 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (7900 - system_prompt.shape[1]):
             llama.append(llama_message)
             token_length += llama_message.shape[1]
         else:
@@ -623,7 +624,7 @@ def history_to_llama(history, tokenizer, config):
         environment_prompt = tokenizer.apply_chat_template(
             conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + environment_prompt.shape[1] < (42000 - system_prompt.shape[1]):
+        if token_length + environment_prompt.shape[1] < (7900 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += environment_prompt.shape[1]
     llama.append(system_prompt)
@@ -671,6 +672,7 @@ async def temp_edit(message_id, thread_id, content, channel_id):
     except Exception as e:
         print(repr(e))
 
+
 async def async_watcher():
     global all_tokens
     global all_time
@@ -702,7 +704,9 @@ async def async_watcher():
                 print("memory allocated, loading model")
                 #
                 # , quantization="fp8"
-                model = LLM(model="meta-llama/Meta-Llama-3.1-8B-Instruct", use_v2_block_manager=True, max_model_len=42000, enforce_eager=True, gpu_memory_utilization=0.9, swap_space=4) # , num_speculative_tokens=20, ngram_prompt_lookup_max=2, speculative_model="[ngram]"
+                #model = LLM(model="meta-llama/Meta-Llama-3.1-8B-Instruct", use_v2_block_manager=True, max_model_len=42000, enforce_eager=True, gpu_memory_utilization=0.9, swap_space=4) # , num_speculative_tokens=20, ngram_prompt_lookup_max=2, speculative_model="[ngram]"
+                model = LLM(model="failspy/Meta-Llama-3-8B-Instruct-abliterated-v3", use_v2_block_manager=True,
+                            max_model_len=8192, enforce_eager=True, gpu_memory_utilization=0.9, swap_space=4)
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -731,9 +735,9 @@ async def async_watcher():
             tokens = 0
             limiter = time.time()
             # model args must be set each time otherwise the seed does not change
-            model_args = SamplingParams(n=1, best_of=10, repetition_penalty=1.1, temperature=0.6, top_p=0.9,
-                                        max_tokens=768, min_tokens=2, skip_special_tokens=True,
-                                        seed=randint(1, 10000000))
+            model_args = SamplingParams(n=1, best_of=5, repetition_penalty=1.3, temperature=0.6, top_p=0.9,
+                                        max_tokens=768, min_tokens=3, skip_special_tokens=True,
+                                        seed=randint(1, 10000000), top_k=50, min_p=0.1)
             for i in model.generate(model_input, sampling_params=model_args, stream=True):
                 all_tokens += 1
                 tokens += 1
