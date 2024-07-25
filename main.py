@@ -618,7 +618,7 @@ def history_to_llama(history, tokenizer, config):
         llama_message = [{"role": role, "content": message.content}]
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
-        if token_length + llama_message.shape[1] < (14000 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (6500 - system_prompt.shape[1]):
             llama.append(llama_message)
             token_length += llama_message.shape[1]
         else:
@@ -627,7 +627,7 @@ def history_to_llama(history, tokenizer, config):
         environment_prompt = tokenizer.apply_chat_template(
             conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + environment_prompt.shape[1] < (14000 - system_prompt.shape[1]):
+        if token_length + environment_prompt.shape[1] < (6500 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += environment_prompt.shape[1]
     llama.append(system_prompt)
