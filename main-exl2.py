@@ -5,7 +5,8 @@ import re
 import sys
 import nextcord as discord
 from dotenv import load_dotenv
-from vllm import LLM, SamplingParams
+from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Tokenizer
+from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob
 import time
 import torch
 import threading

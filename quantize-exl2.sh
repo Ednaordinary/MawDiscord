@@ -1,0 +1,1 @@
+./venv/bin/python ./quantize-exl2.py  -i /home/user/.cache/huggingface/hub/models--mlabonne--Meta-Llama-3.1-8B-Instruct-abliterated/ -o ./exl2-cache/ -cf ./llama-3.1-8b-instruct-abliterated-exl2-7.5bpw -b 7.5 -hb 8

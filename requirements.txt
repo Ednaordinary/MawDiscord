@@ -13,7 +13,5 @@ colorama
 torchvision
 triton
 xformers
-fbgemm-gpu
-hqq
-quanto
-llama-cpp-python
+optimum
+auto-gptq

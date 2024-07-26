@@ -30,3 +30,5 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 #model.save_pretrained("llama-3-70b-8nbits-eetq")
 model.save_pretrained("llama-3.1-8b-instruct-eetq")
+
+# WARNING: this script is bad and doesn't have a good calibration dataset!!!
