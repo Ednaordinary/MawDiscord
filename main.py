@@ -6,7 +6,7 @@ import sys
 import nextcord as discord
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
-from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q4, ExLlamaV2Tokenizer
+from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, ExLlamaV2Sampler
 import time
 import torch
@@ -714,7 +714,7 @@ async def async_watcher():
                 print("memory allocated, loading model")
                 model = ExLlamaV2(config)
                 # 150 * 256: 38700
-                cache = ExLlamaV2Cache_Q4(model, lazy=True, max_seq_len = 500 * 256)
+                cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len = 500 * 256)
                 model.load_autosplit(cache, progress=True)
             gc.collect()
             torch.cuda.empty_cache()
