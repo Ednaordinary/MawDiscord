@@ -609,12 +609,13 @@ def history_to_llama(history, config):
     llama = []
     token_length = 0
     print(config.system_prompt)
-    system_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.system_prompt}],
+    system_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.system_prompt.replace(r"\n", "\n")}],
                                                   tokenize=True, return_tensors='pt', add_generation_prompt=False)
     history.reverse()
     for idx, message in enumerate(history):
         role = "assistant" if message.role == "character" else message.role
-        llama_message = [{"role": role, "content": message.content}]
+        llama_message = [{"role": role, "content": message.content.replace(r"\n", "\n")}]
+        print(message.content)
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
         if token_length + llama_message.shape[1] < (128000 - system_prompt.shape[1]):
@@ -624,7 +625,7 @@ def history_to_llama(history, config):
             break
     if config.environment_prompt != "":
         environment_prompt = tokenizer.apply_chat_template(
-            conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
+            conversation=[{"role": "system", "content": config.environment_prompt.replace(r"\n", "\n")}], tokenize=False, return_tensors='pt',
             add_generation_prompt=False)
         if token_length + environment_prompt.shape[1] < (128000 - system_prompt.shape[1]):
             llama.append(environment_prompt)
@@ -633,9 +634,12 @@ def history_to_llama(history, config):
     llama.reverse()
     history.reverse()  # this was inplace so it needs to be flipped back
     llama = torch.cat(llama, 1)
-    print(token_length, llama.shape)
-    llama = str([tokenizer.decode(x, skip_special_tokens=False) for x in llama])
-    #print(llama)
+    print("tokens:", token_length)
+    #llama = str([tokenizer.decode(x, skip_special_tokens=False) for x in llama])
+    print(tokenizer.batch_decode(llama, skip_special_tokens=False))
+    llama = tokenizer.encode(tokenizer.batch_decode(llama, skip_special_tokens=False)[0].replace(r"\n", "\n"), add_special_tokens=True, return_tensors='pt')
+    #llama = "".join(llama)
+    #llama = llama.replace(r"\n", "\n")
     return llama
 
 
@@ -745,12 +749,14 @@ async def async_watcher():
                 cache=cache,
                 tokenizer=tokenizer,
             )
-            input_ids = tokenizer.encode(model_input, add_bos=False)
+            #input_ids = tokenizer.encode(model_input, add_bos=False, encode_special_tokens=True)
+            input_ids = model_input
+            print(model_input)
             sampler = ExLlamaV2Sampler.Settings.greedy()
             sampler.top_p = 0.9
             sampler.min_temp = 0.5
             sampler.max_temp = 0.7
-            sampler.token_repetition_penalty = 1.15
+            sampler.token_repetition_penalty = 1.05
             job = ExLlamaV2DynamicJob(
                 input_ids=input_ids,
                 max_new_tokens=768,
@@ -766,74 +772,76 @@ async def async_watcher():
             local_response = ""
             while not eos:
                 results = generator.iterate()
-                result = results[0]
-                if result["stage"] == "streaming":
-                    text = result.get("text", "")
-                    all_tokens += 1
-                    tokens += 1
-                    print(text, end="", flush=True)
-                    response = response + text
-                    local_response = local_response + text
-                    if "<|eot_id|>" in response:
-                        eos = True
-                        response = response.replace("<|eot_id|>", "")
-                        if "{\"name\":" in response and "image" in response and character.maw and not isinstance(message.channel, discord.DMChannel):
-                            find_json = re.compile(r'{[\w\W]+?}')
-                            tool_append = "<|start_header_id|>ipython<|end_header_id|>"
-                            for json_data in re.findall(find_json, response):
-                                print("Json data detected")
-                                try:
-                                    print("Decoding:", json_data + "}")
-                                    possible_json = json.loads(json_data + "}")
-                                except Exception as e:
-                                    print(repr(e))
-                                    pass
-                                else:
+                if results != []:
+                    result = results[0]
+                    if result["stage"] == "streaming":
+                        text = result.get("text", "").replace(r"\n", "\n")
+                        all_tokens += 1
+                        tokens += 1
+                        print(text, end="", flush=True)
+                        response = response + text
+                        local_response = local_response + text
+                        if "<|eot_id|>" in response:
+                            eos = True
+                            response = response.replace("<|eot_id|>", "")
+                            if "{\"name\":" in response and "image" in response and character.maw and not isinstance(message.channel, discord.DMChannel):
+                                find_json = re.compile(r'{[\w\W]+?}')
+                                #tool_append = "<|start_header_id|>ipython<|end_header_id|>"
+                                for json_data in re.findall(find_json, response):
+                                    print("Json data detected")
                                     try:
-                                        function_name = possible_json['name']
+                                        print("Decoding:", json_data + "}")
+                                        possible_json = json.loads(json_data + "}")
                                     except Exception as e:
                                         print(repr(e))
                                         pass
                                     else:
-                                        if "image" in function_name:
-                                            try:
-                                                function_parameters = possible_json['parameters']
-                                            except Exception as e:
-                                                print(repr(e))
-                                                tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
-                                            else:
+                                        try:
+                                            function_name = possible_json['name']
+                                        except Exception as e:
+                                            print(repr(e))
+                                            pass
+                                        else:
+                                            if "image" in function_name:
                                                 try:
-                                                    function_prompt = function_parameters['prompt']
+                                                    function_parameters = possible_json['parameters']
                                                 except Exception as e:
                                                     print(repr(e))
-                                                    tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
+                                                    #tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
                                                 else:
-                                                    print("Successfully decoded prompt")
-                                                    with open("../DanteMode/queue.txt", "a") as image_queue:
-                                                        image_queue.write(
-                                                            "\n" + str(channel.id) + "|" + str(function_prompt).replace("\n", "\\n"))
-                                                    tool_append = tool_append + "\n\nEnqueued the following prompt: " + str(function_prompt)
-                                        response = response.replace(json_data + "}", "")
-                            tool_append = tool_append + "\n\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
-                            input_text = tokenizer.decode(input_ids, decode_special_tokens=True)
-                            input_ids = tokenizer.encode(input_text[0] + local_response + tool_append, add_bos=False, encode_special_tokens = True)
-                            job = ExLlamaV2DynamicJob(
-                                input_ids=input_ids,
-                                max_new_tokens=768,
-                                token_healing=True,
-                                # stop_conditions="<|eot_id|>",
-                                gen_settings=sampler,
-                                decode_special_tokens=True,
-                                seed=randint(1, 10000000),
-                            )
-                    if time.time() - limiter > 1.0:
-                        limiter = time.time()
-                        if character.maw:
-                                asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
-                        else:
-                            asyncio.run_coroutine_threadsafe(
-                                coro=temp_edit(message.id, thread, response, channel.id),
-                                loop=client.loop)
+                                                    try:
+                                                        function_prompt = function_parameters['prompt']
+                                                    except Exception as e:
+                                                        print(repr(e))
+                                                        #tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
+                                                    else:
+                                                        print("Successfully decoded prompt")
+                                                        with open("../DanteMode/queue.txt", "a") as image_queue:
+                                                            image_queue.write(
+                                                                "\n" + str(channel.id) + "|" + str(function_prompt).replace("\n", "\\n"))
+                                                        #tool_append = tool_append + "\n\nEnqueued the following prompt: " + str(function_prompt)
+                                            response = response.replace(json_data + "}", "")
+                                # tool_append = tool_append + "\n\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+                                # input_text = tokenizer.decode(input_ids, decode_special_tokens=True)
+                                # input_ids = tokenizer.encode(input_text[0] + local_response + tool_append, add_bos=False, encode_special_tokens = True)
+                                # job = ExLlamaV2DynamicJob(
+                                #     input_ids=input_ids,
+                                #     max_new_tokens=768,
+                                #     token_healing=True,
+                                #     # stop_conditions="<|eot_id|>",
+                                #     gen_settings=sampler,
+                                #     decode_special_tokens=True,
+                                #     seed=randint(1, 10000000),
+                                # )
+                        if time.time() - limiter > 1.0:
+                            limiter = time.time()
+                            if character.maw:
+                                    asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+                            else:
+                                asyncio.run_coroutine_threadsafe(
+                                    coro=temp_edit(message.id, thread, response, channel.id),
+                                    loop=client.loop)
+                else: eos = True
             if character.maw:
                 if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
                     asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, response),
