@@ -609,8 +609,9 @@ def history_to_llama(history, config):
     llama = []
     token_length = 0
     print(config.system_prompt)
-    system_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.system_prompt.replace(r"\n", "\n")}],
-                                                  tokenize=True, return_tensors='pt', add_generation_prompt=False)
+    system_prompt = tokenizer.apply_chat_template(
+        conversation=[{"role": "system", "content": config.system_prompt.replace(r"\n", "\n")}],
+        tokenize=True, return_tensors='pt', add_generation_prompt=False)
     history.reverse()
     for idx, message in enumerate(history):
         role = "assistant" if message.role == "character" else message.role
@@ -623,9 +624,10 @@ def history_to_llama(history, config):
             token_length += llama_message.shape[1]
         else:
             break
-    if config.environment_prompt != "":
+    if config.environment_prompt.strip() != "":
         environment_prompt = tokenizer.apply_chat_template(
-            conversation=[{"role": "system", "content": config.environment_prompt.replace(r"\n", "\n")}], tokenize=False, return_tensors='pt',
+            conversation=[{"role": "system", "content": config.environment_prompt.replace(r"\n", "\n")}],
+            tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
         if token_length + environment_prompt.shape[1] < (128000 - system_prompt.shape[1]):
             llama.append(environment_prompt)
@@ -636,8 +638,8 @@ def history_to_llama(history, config):
     llama = torch.cat(llama, 1)
     print("tokens:", token_length)
     #llama = str([tokenizer.decode(x, skip_special_tokens=False) for x in llama])
-    print(tokenizer.batch_decode(llama, skip_special_tokens=False))
-    llama = tokenizer.encode(tokenizer.batch_decode(llama, skip_special_tokens=False)[0].replace(r"\n", "\n"), add_special_tokens=True, return_tensors='pt')
+    llama = tokenizer.encode(tokenizer.batch_decode(llama, skip_special_tokens=False)[0].replace(r"\n", "\n"),
+                             add_special_tokens=True, return_tensors='pt')
     #llama = "".join(llama)
     #llama = llama.replace(r"\n", "\n")
     return llama
@@ -716,7 +718,7 @@ async def async_watcher():
                 print("memory allocated, loading model")
                 model = ExLlamaV2(config)
                 # 150 * 256: 38700
-                cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len = 500 * 256)
+                cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=500 * 256)
                 model.load_autosplit(cache, progress=True)
             gc.collect()
             torch.cuda.empty_cache()
@@ -754,9 +756,10 @@ async def async_watcher():
             print(model_input)
             sampler = ExLlamaV2Sampler.Settings.greedy()
             sampler.top_p = 0.9
+            sampler.temperature = 0.7
             sampler.min_temp = 0.5
-            sampler.max_temp = 0.7
-            sampler.token_repetition_penalty = 1.05
+            sampler.max_temp = 0.8
+            sampler.token_repetition_penalty = 1.1
             job = ExLlamaV2DynamicJob(
                 input_ids=input_ids,
                 max_new_tokens=768,
@@ -784,7 +787,8 @@ async def async_watcher():
                         if "<|eot_id|>" in response:
                             eos = True
                             response = response.replace("<|eot_id|>", "")
-                            if "{\"name\":" in response and "image" in response and character.maw and not isinstance(message.channel, discord.DMChannel):
+                            if "{\"name\":" in response and "image" in response and character.maw and not isinstance(
+                                    message.channel, discord.DMChannel):
                                 find_json = re.compile(r'{[\w\W]+?}')
                                 #tool_append = "<|start_header_id|>ipython<|end_header_id|>"
                                 for json_data in re.findall(find_json, response):
@@ -818,7 +822,8 @@ async def async_watcher():
                                                         print("Successfully decoded prompt")
                                                         with open("../DanteMode/queue.txt", "a") as image_queue:
                                                             image_queue.write(
-                                                                "\n" + str(channel.id) + "|" + str(function_prompt).replace("\n", "\\n"))
+                                                                "\n" + str(channel.id) + "|" + str(
+                                                                    function_prompt).replace("\n", "\\n"))
                                                         #tool_append = tool_append + "\n\nEnqueued the following prompt: " + str(function_prompt)
                                             response = response.replace(json_data + "}", "")
                                 # tool_append = tool_append + "\n\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
@@ -836,12 +841,13 @@ async def async_watcher():
                         if time.time() - limiter > 1.0:
                             limiter = time.time()
                             if character.maw:
-                                    asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+                                asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
                             else:
                                 asyncio.run_coroutine_threadsafe(
                                     coro=temp_edit(message.id, thread, response, channel.id),
                                     loop=client.loop)
-                else: eos = True
+                else:
+                    eos = True
             if character.maw:
                 if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
                     asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, response),
@@ -983,8 +989,8 @@ async def on_message(message):
                 system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to " + (
                     message.author.global_name if message.author.global_name else message.author.name)
             else:
-                #system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. If a user requests an image, enclose a description of the image in <- and ->, <-like this->. Do not ask followup questions before making the image. To ping users, enclose either their name or ID in |+ and |, like this: |+Edna|. Do not extend the users name, use the exact name you are given. You are talking in a server named "
-                system_prompt = "\n\nYou have tool calling capabilities. Some tools may return a response, when this happens use the output to format an answer to the original use question.\n\nWhen using the following functions, please respond with a JSON for a function call with its proper arguments that best answers the given prompt.\n\nRespond in the format {\"name\": function name, \"parameters\" dictionary of argument names and their value}. Do not use variables.\n\nUse the function 'image_generate' to: Generate an image for the user\n{\n    \"name\": \"image_generate\",\n    \"description\": \"Generate and image for the user\",\n    \"parameters\": {\n        \"prompt\": {\n            \"param_type\": \"str\",\n            \"description\": \"The prompt to generate the image off of\",\n            \"required\": true\n        }\n    }\n}\n\n\nYou are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message.\n\nYou are talking in a server named "
+                system_prompt = (
+                    "\nYou are Maw, an intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message.\n\nYou have tool calling capabilities.\n\nWhen using the following functions, please respond with a JSON for a function call with its proper arguments that best answers the given prompt.\n\nRespond in the format {\"name\": function name, \"parameters\" dictionary of argument names and their value}. Do not use variables.\n\nUse the function 'image_generate' to: Generate an image for the user\n{\n    \"name\": \"image_generate\",\n    \"description\": \"Generate and image for the user\",\n    \"parameters\": {\n        \"prompt\": {\n            \"param_type\": \"str\",\n            \"description\": \"The prompt to generate the image off of\",\n            \"required\": true\n        }\n    }\n}\nThis is the only tool you have.\nDo not include tool formatting when not calling a tool.\nDo not generate an image unless explicitly asked to do so.\nIf asked to generate an image, add a short description before you call the tool.\n\nYou are talking in a server named ")
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
