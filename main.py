@@ -760,157 +760,80 @@ async def async_watcher():
                 decode_special_tokens=True,
                 seed=randint(1, 10000000),
             )
-            final_stop = False
             response = ""
-            while not final_stop:
-                generator.enqueue(job)
-                eos = False
-                local_response = ""
-                while not eos:
-                    results = generator.iterate()
-                    result = results[0]
-                    if result["stage"] == "streaming":
-                        text = result.get("text", "")
-                        all_tokens += 1
-                        tokens += 1
-                        print(text, end="", flush=True)
-                        response = response + text
-                        local_response = local_response + text
-                        if "<|eot_id|>" in response:
-                            eos = True
-                            response = response.replace("<|eot_id|>", "")
-                            if "{\"name\":" in response and "image" in response:
-                                find_json = re.compile(r'{[\w\W]+?}')
-                                tool_append = "<|start_header_id|>ipython<|end_header_id|>"
-                                for json_data in re.findall(find_json, response):
+            generator.enqueue(job)
+            eos = False
+            local_response = ""
+            while not eos:
+                results = generator.iterate()
+                result = results[0]
+                if result["stage"] == "streaming":
+                    text = result.get("text", "")
+                    all_tokens += 1
+                    tokens += 1
+                    print(text, end="", flush=True)
+                    response = response + text
+                    local_response = local_response + text
+                    if "<|eot_id|>" in response:
+                        eos = True
+                        response = response.replace("<|eot_id|>", "")
+                        if "{\"name\":" in response and "image" in response and character.maw and not isinstance(message.channel, discord.DMChannel):
+                            find_json = re.compile(r'{[\w\W]+?}')
+                            tool_append = "<|start_header_id|>ipython<|end_header_id|>"
+                            for json_data in re.findall(find_json, response):
+                                print("Json data detected")
+                                try:
+                                    print("Decoding:", json_data + "}")
+                                    possible_json = json.loads(json_data + "}")
+                                except Exception as e:
+                                    print(repr(e))
+                                    pass
+                                else:
                                     try:
-                                        possible_json = json.loads(json_data)
-                                    except:
+                                        function_name = possible_json['name']
+                                    except Exception as e:
+                                        print(repr(e))
                                         pass
                                     else:
-                                        try:
-                                            function_name = possible_json['name']
-                                        except:
-                                            pass
-                                        else:
-                                            if "image" in function_name:
+                                        if "image" in function_name:
+                                            try:
+                                                function_parameters = possible_json['parameters']
+                                            except Exception as e:
+                                                print(repr(e))
+                                                tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
+                                            else:
                                                 try:
-                                                    function_parameters = possible_json['parameters']
-                                                except:
+                                                    function_prompt = function_parameters['prompt']
+                                                except Exception as e:
+                                                    print(repr(e))
                                                     tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
                                                 else:
-                                                    try:
-                                                        function_prompt = function_parameters['prompt']
-                                                    except:
-                                                        tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
-                                                    else:
-                                                        with open("../DanteMode/queue.txt", "a") as image_queue:
-                                                            image_queue.write(
-                                                                "\n" + str(channel.id) + "|" + str(function_prompt).replace("\n", "\\n"))
-                                                        tool_append = tool_append + "\n\nEnqueued the following prompt: " + str(function_prompt)
-                                tool_append = tool_append + "\n\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
-                                input_text = tokenizer.decode(input_ids, decode_special_tokens=True)
-                                input_ids = tokenizer.encode(input_text[0] + local_response + tool_append, add_bos=False, encode_special_tokens = True)
-                                job = ExLlamaV2DynamicJob(
-                                    input_ids=input_ids,
-                                    max_new_tokens=768,
-                                    token_healing=True,
-                                    # stop_conditions="<|eot_id|>",
-                                    gen_settings=sampler,
-                                    decode_special_tokens=True,
-                                    seed=randint(1, 10000000),
-                                )
-                            else:
-                                final_stop = True
-                        if time.time() - limiter > 1.0:
-                            limiter = time.time()
-                            if character.maw:
-                                    asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
-                            else:
-                                asyncio.run_coroutine_threadsafe(
-                                    coro=temp_edit(message.id, thread, response, channel.id),
-                                    loop=client.loop)
-            # while not eos:
-            #     results = generator.iterate()
-            #     result = results[0]
-            #     if result["stage"] == "streaming":
-            #         text = result.get("text", "")
-            #         all_tokens += 1
-            #         tokens += 1
-            #         print(text, end="", flush=True)
-            #         response = response + text
-            #         if "<|eot_id|>" in response: eos = True
-            #         response = response.replace("<|eot_id|>", "")
-            #         response = response.replace(r"\n", "\n")
-            #         if character.maw and not isinstance(channel, discord.DMChannel):
-            #             images = re.findall(r"<-[\S\s]+>", response)
-            #             if images != None:
-            #                 with open("../DanteMode/queue.txt", "a") as image_queue:
-            #                     for image in images:
-            #                         response = response.replace(image, "")
-            #                         if image[-2] == "-":
-            #                             image = image[2:-2]
-            #                         else:
-            #                             image = image[2:-1]
-            #                         if image != "":
-            #                             image_queue.write("\n" + str(channel.id) + "|" + image.replace("\n", "\\n"))
-            #             pings = re.findall(r"\|+[\S\s]+\|", response)
-            #             if pings != None:
-            #                 for ping in pings:
-            #                     old_ping = ping
-            #                     ping = ping.lower().strip()[2:-1]
-            #                     new_ping = "No ping found. (" + ping + ")"
-            #                     ping_cutoff = 2
-            #                     try:
-            #                         int(ping)
-            #                     except:
-            #                         for member in channel.members:
-            #                             if member.nick and len(
-            #                                     ping) > ping_cutoff and ping in member.nick.lower().strip():
-            #                                 new_ping = "<@" + str(member.id) + ">"
-            #                             elif member.nick and ping == member.nick.lower().strip():
-            #                                 new_ping = "<@" + str(member.id) + ">"
-            #                             elif member.global_name and len(
-            #                                     ping) > ping_cutoff and ping in member.global_name.lower().strip():
-            #                                 new_ping = "<@" + str(member.id) + ">"
-            #                             elif member.global_name and ping == member.global_name.lower().strip():
-            #                                 new_ping = "<@" + str(member.id) + ">"
-            #                             elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
-            #                                 new_ping = "<@" + str(member.id) + ">"
-            #                             elif ping == member.name.lower().strip():
-            #                                 new_ping = "<@" + str(member.id) + ">"
-            #                     else:
-            #                         if int(ping) in [x.id for x in channel.members]:
-            #                             new_ping = "<@" + str(ping) + ">"
-            #                         else:
-            #                             for member in channel.members:
-            #                                 if member.nick and len(
-            #                                         ping) > ping_cutoff and ping in member.nick.lower().strip():
-            #                                     new_ping = "<@" + str(member.id) + ">"
-            #                                 elif member.nick and ping == member.nick.lower().strip():
-            #                                     new_ping = "<@" + str(member.id) + ">"
-            #                                 elif member.global_name and len(
-            #                                         ping) > ping_cutoff and ping in member.global_name.lower().strip():
-            #                                     new_ping = "<@" + str(member.id) + ">"
-            #                                 elif member.global_name and ping == member.global_name.lower().strip():
-            #                                     new_ping = "<@" + str(member.id) + ">"
-            #                                 elif len(
-            #                                         ping) > ping_cutoff and ping in member.name.lower().strip():
-            #                                     new_ping = "<@" + str(member.id) + ">"
-            #                                 elif ping == member.name.lower().strip():
-            #                                     new_ping = "<@" + str(member.id) + ">"
-            #                     response = response.replace(old_ping, new_ping)
-            #         if time.time() - limiter > 0.8:
-            #             limiter = time.time()
-            #             if character.maw:
-            #                     asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
-            #             else:
-            #                 asyncio.run_coroutine_threadsafe(
-            #                     coro=temp_edit(message.id, thread, response, channel.id),
-            #                     loop=client.loop)
-            del generator, job, input_ids, result, results
-            gc.collect()
-            torch.cuda.empty_cache()
+                                                    print("Successfully decoded prompt")
+                                                    with open("../DanteMode/queue.txt", "a") as image_queue:
+                                                        image_queue.write(
+                                                            "\n" + str(channel.id) + "|" + str(function_prompt).replace("\n", "\\n"))
+                                                    tool_append = tool_append + "\n\nEnqueued the following prompt: " + str(function_prompt)
+                                        response = response.replace(json_data + "}", "")
+                            tool_append = tool_append + "\n\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+                            input_text = tokenizer.decode(input_ids, decode_special_tokens=True)
+                            input_ids = tokenizer.encode(input_text[0] + local_response + tool_append, add_bos=False, encode_special_tokens = True)
+                            job = ExLlamaV2DynamicJob(
+                                input_ids=input_ids,
+                                max_new_tokens=768,
+                                token_healing=True,
+                                # stop_conditions="<|eot_id|>",
+                                gen_settings=sampler,
+                                decode_special_tokens=True,
+                                seed=randint(1, 10000000),
+                            )
+                    if time.time() - limiter > 1.0:
+                        limiter = time.time()
+                        if character.maw:
+                                asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                coro=temp_edit(message.id, thread, response, channel.id),
+                                loop=client.loop)
             if character.maw:
                 if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
                     asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, response),
@@ -931,14 +854,13 @@ async def async_watcher():
                 activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(
                     round(tokens / (time.time() - start_time), 2)) + " tps | " + str(
                     round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.idle), loop=client.loop)
-            decoded_response = response
             if current_gen.character.maw:
                 history.append(MawCharacterMessage(response, (str(current_gen.character_message.id) + "-" + str(
                     current_gen.character_message.channel.id)), "character"))
             else:
                 history.append(MawCharacterMessage(response, current_gen.character_message.id, "character"))
             current_gen.character.write_history(history)
-            del response, decoded_response, model_input, response
+            del response, generator, job, input_ids, result, results, model_input
             gc.collect()
             torch.cuda.empty_cache()
             model_queue.pop(0)
