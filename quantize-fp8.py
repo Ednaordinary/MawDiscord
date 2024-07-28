@@ -24,3 +24,5 @@ messages = [
 tokenizer.apply_chat_template(messages)
 output = model.generate(messages)
 print(tokenizer.decode(output))
+
+# WARNING: this script is bad and doesn't have a good calibration dataset!!!

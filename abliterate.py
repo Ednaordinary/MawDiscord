@@ -72,11 +72,12 @@ else:
 
 
 def tokenize_instructions_chat(
-    tokenizer: AutoTokenizer,
-    instructions: List[str]
+        tokenizer: AutoTokenizer,
+        instructions: List[str]
 ) -> Int[Tensor, 'batch_size seq_len']:
     prompts = [CHAT_TEMPLATE.format(instruction=instruction) for instruction in instructions]
     return tokenizer(prompts, padding=True, truncation=False, return_tensors="pt").input_ids
+
 
 tokenize_instructions_fn = functools.partial(tokenize_instructions_chat, tokenizer=model.tokenizer)
 

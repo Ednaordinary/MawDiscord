@@ -732,34 +732,27 @@ async def async_watcher():
                 thread, channel = current_gen.thread, current_gen.thread.parent
             else:
                 thread, channel = None, current_gen.thread
-            # streamer_thread = threading.Thread(target=message_updater,
-            #                                    args=[current_gen.character_message, streamer, current_gen.character,
-            #                                          thread, channel])
-            # streamer_thread.start()
-            start_time = time.time()
-            #with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.FLASH_ATTENTION, torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION, torch.nn.attention.SDPBackend.MATH, torch.nn.attention.SDPBackend.CUDNN_ATTENTION]):
-            #response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-            #                      eos_token_id=stop_token)
-            response = ""
             message = current_gen.character_message
             character = current_gen.character
             tokens = 0
             limiter = time.time()
-            # model args must be set each time otherwise the seed does not change
             generator = ExLlamaV2DynamicGenerator(
                 model=model,
                 cache=cache,
                 tokenizer=tokenizer,
+                max_q_size=16,
             )
             #input_ids = tokenizer.encode(model_input, add_bos=False, encode_special_tokens=True)
             input_ids = model_input
             print(model_input)
             sampler = ExLlamaV2Sampler.Settings.greedy()
             sampler.top_p = 0.9
-            sampler.temperature = 0.7
-            sampler.min_temp = 0.5
-            sampler.max_temp = 0.8
-            sampler.token_repetition_penalty = 1.1
+            sampler.temperature = 0.6
+            #sampler.min_temp = 0.6
+            #sampler.max_temp = 0.7
+            sampler.token_repetition_penalty = randint(1150, 1250) / 1000
+            sampler.token_repetition_range = 50
+            sampler.token_repetition_decay = 10
             job = ExLlamaV2DynamicJob(
                 input_ids=input_ids,
                 max_new_tokens=768,
@@ -773,6 +766,7 @@ async def async_watcher():
             generator.enqueue(job)
             eos = False
             local_response = ""
+            start_time = time.time()
             while not eos:
                 results = generator.iterate()
                 if results != []:
@@ -825,7 +819,7 @@ async def async_watcher():
                                                                 "\n" + str(channel.id) + "|" + str(
                                                                     function_prompt).replace("\n", "\\n"))
                                                         #tool_append = tool_append + "\n\nEnqueued the following prompt: " + str(function_prompt)
-                                            response = response.replace(json_data + "}", "")
+                                            response = response.replace(json_data, "")
                                 # tool_append = tool_append + "\n\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
                                 # input_text = tokenizer.decode(input_ids, decode_special_tokens=True)
                                 # input_ids = tokenizer.encode(input_text[0] + local_response + tool_append, add_bos=False, encode_special_tokens = True)
@@ -856,13 +850,19 @@ async def async_watcher():
                     asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
             else:
                 if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
-                    asyncio.run_coroutine_threadsafe(
-                        coro=edit_add_hookredobutton(hook_list[channel.id], message, response,
-                                                     thread), loop=client.loop)
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            coro=edit_add_hookredobutton(hook_list[channel.id], message, response,
+                                                         thread), loop=client.loop)
+                    except:
+                        pass
                 else:
-                    asyncio.run_coroutine_threadsafe(
-                        coro=edit_add_hookeditbutton(hook_list[channel.id], message, response,
-                                                     thread), loop=client.loop)
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            coro=edit_add_hookeditbutton(hook_list[channel.id], message, response,
+                                                         thread), loop=client.loop)
+                    except:
+                        pass
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
                 activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(

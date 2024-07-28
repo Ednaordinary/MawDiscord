@@ -14,9 +14,10 @@ from typing import Optional
 import vram
 
 #max_matching_ngram_size=2, prompt_lookup_num_tokens=20,
-model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, repetition_penalty=1.2) # , max_matching_ngram_size=2, prompt_lookup_num_tokens=20
-                  #cache_implementation="quantized",
-                  #cache_config={"backend": "quanto", "nbits": 4})
+model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True,
+                  repetition_penalty=1.2)  # , max_matching_ngram_size=2, prompt_lookup_num_tokens=20
+#cache_implementation="quantized",
+#cache_config={"backend": "quanto", "nbits": 4})
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -838,7 +839,7 @@ async def async_watcher():
                 #                               eos_token_id=stop_token, cache_implementation = "quantized", cache_config={"backend": "quanto", "nbits": 4})
                 # else:
                 response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                                        eos_token_id=stop_token)
+                                          eos_token_id=stop_token)
             all_tokens += len(response[0][model_input.shape[1]:])
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
