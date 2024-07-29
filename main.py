@@ -763,9 +763,9 @@ async def async_watcher():
                 seed=randint(1, 10000000),
             )
             response = ""
+            final_response = ""
             generator.enqueue(job)
             eos = False
-            local_response = ""
             start_time = time.time()
             while not eos:
                 results = generator.iterate()
@@ -777,89 +777,49 @@ async def async_watcher():
                         tokens += 1
                         print(text, end="", flush=True)
                         response = response + text
-                        local_response = local_response + text
+                        final_response = final_response + text
                         if "<|eot_id|>" in response:
                             eos = True
                             response = response.replace("<|eot_id|>", "")
-                            if "{\"name\":" in response and "image" in response and character.maw and not isinstance(
+                            if "<-" in response and character.maw and not isinstance(
                                     message.channel, discord.DMChannel):
-                                find_json = re.compile(r'{[\w\W]+?}')
-                                #tool_append = "<|start_header_id|>ipython<|end_header_id|>"
-                                for json_data in re.findall(find_json, response):
-                                    print("Json data detected")
-                                    try:
-                                        print("Decoding:", json_data + "}")
-                                        possible_json = json.loads(json_data + "}")
-                                    except Exception as e:
-                                        print(repr(e))
-                                        pass
-                                    else:
-                                        try:
-                                            function_name = possible_json['name']
-                                        except Exception as e:
-                                            print(repr(e))
-                                            pass
-                                        else:
-                                            if "image" in function_name:
-                                                try:
-                                                    function_parameters = possible_json['parameters']
-                                                except Exception as e:
-                                                    print(repr(e))
-                                                    #tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
-                                                else:
-                                                    try:
-                                                        function_prompt = function_parameters['prompt']
-                                                    except Exception as e:
-                                                        print(repr(e))
-                                                        #tool_append = tool_append + "\n\nFailed to enqueue image, please reformat your request."
-                                                    else:
-                                                        print("Successfully decoded prompt")
-                                                        with open("../DanteMode/queue.txt", "a") as image_queue:
-                                                            image_queue.write(
-                                                                "\n" + str(channel.id) + "|" + str(
-                                                                    function_prompt).replace("\n", "\\n"))
-                                                        #tool_append = tool_append + "\n\nEnqueued the following prompt: " + str(function_prompt)
-                                            response = response.replace(json_data, "")
-                                # tool_append = tool_append + "\n\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
-                                # input_text = tokenizer.decode(input_ids, decode_special_tokens=True)
-                                # input_ids = tokenizer.encode(input_text[0] + local_response + tool_append, add_bos=False, encode_special_tokens = True)
-                                # job = ExLlamaV2DynamicJob(
-                                #     input_ids=input_ids,
-                                #     max_new_tokens=768,
-                                #     token_healing=True,
-                                #     # stop_conditions="<|eot_id|>",
-                                #     gen_settings=sampler,
-                                #     decode_special_tokens=True,
-                                #     seed=randint(1, 10000000),
-                                # )
+                                find_json = re.compile(r'<-[\S\s]+>')
+                                for image in re.findall(find_json, response):
+                                    print("image detected")
+                                    image = image[2:-1]
+                                    if image[-1] == "-": image = image[:-1]
+                                    if image != "":
+                                        with open("../DanteMode/queue.txt", "a") as image_queue:
+                                            image_queue.write("\n" + str(channel.id) + "|" + str(image).replace("\n", "\\n"))
+                                    final_response = final_response.replace(image, "")
                         if time.time() - limiter > 1.0:
                             limiter = time.time()
                             if character.maw:
-                                asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+                                asyncio.run_coroutine_threadsafe(coro=message.edit(final_response), loop=client.loop)
                             else:
                                 asyncio.run_coroutine_threadsafe(
-                                    coro=temp_edit(message.id, thread, response, channel.id),
+                                    coro=temp_edit(message.id, thread, final_response, channel.id),
                                     loop=client.loop)
                 else:
                     eos = True
             if character.maw:
                 if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
-                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, response),
+                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, final_response),
                                                      loop=client.loop)
                 else:
-                    asyncio.run_coroutine_threadsafe(coro=message.edit(response), loop=client.loop)
+                    asyncio.run_coroutine_threadsafe(coro=message.edit(final_response), loop=client.loop)
             else:
                 if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
                     try:
                         asyncio.run_coroutine_threadsafe(
-                            coro=edit_add_hookredobutton(hook_list[channel.id], message, response,
+                            coro=edit_add_hookredobutton(hook_list[channel.id], message, final_response,
                                                          thread), loop=client.loop)
                     except:
                         pass
                 else:
                     try:
                         asyncio.run_coroutine_threadsafe(
-                            coro=edit_add_hookeditbutton(hook_list[channel.id], message, response,
+                            coro=edit_add_hookeditbutton(hook_list[channel.id], message, final_response,
                                                          thread), loop=client.loop)
                     except:
                         pass
@@ -990,7 +950,7 @@ async def on_message(message):
                     message.author.global_name if message.author.global_name else message.author.name)
             else:
                 system_prompt = (
-                    "\nYou are Maw, an intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message.\n\nYou have tool calling capabilities.\n\nWhen using the following functions, please respond with a JSON for a function call with its proper arguments that best answers the given prompt.\n\nRespond in the format {\"name\": function name, \"parameters\" dictionary of argument names and their value}. Do not use variables.\n\nUse the function 'image_generate' to: Generate an image for the user\n{\n    \"name\": \"image_generate\",\n    \"description\": \"Generate and image for the user\",\n    \"parameters\": {\n        \"prompt\": {\n            \"param_type\": \"str\",\n            \"description\": \"The prompt to generate the image off of\",\n            \"required\": true\n        }\n    }\n}\nThis is the only tool you have.\nDo not include tool formatting when not calling a tool.\nDo not generate an image unless explicitly asked to do so.\nIf asked to generate an image, add a short description before you call the tool.\n\nYou are talking in a server named ")
+                    "\nYou are Maw, an intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message.\n\nYou are able to generate or create images by making a generation prompt: enclose a description of an image in <- and ->, for example: <-A hot dog on a grill, the grill sits on a wooden table with condiments on it->. Do not generate an image unless explicitly asked to do so.\nIf asked to generate an image, add a short description or acknowledgement before you add the generation prompt.\n\nYou are talking in a server named ")
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
