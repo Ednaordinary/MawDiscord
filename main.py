@@ -28,6 +28,7 @@ intents = discord.Intents.all()
 client = discord.Client(intents=intents)
 all_tokens = 0
 all_time = 0
+model_callback_limiter = 1 # doesn't matter what this value is
 
 os.environ["OMP_NUM_THREADS"] = "16"
 os.environ["TOKENIZERS_PARALLELISM"] = "1"
@@ -716,10 +717,27 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
+                if isinstance(current_gen.thread, discord.Thread):
+                    thread, channel = current_gen.thread, current_gen.thread.parent
+                else:
+                    thread, channel = None, current_gen.thread
                 model = ExLlamaV2(config)
-                # 150 * 256: 38700
                 cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=500 * 256)
-                model.load_autosplit(cache, progress=True)
+                global model_callback_limiter
+                model_callback_limiter = time.time()
+                def model_load_callback(current, total):
+                    print(current, total)
+                    global model_callback_limiter
+                    if time.time() > model_callback_limiter + 0.5:
+                        if current_gen.character.maw:
+                            asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(str(round(current*100 / total, 0)) + "%"),
+                                                             loop=client.loop)
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                coro=temp_edit(current_gen.character_message.id, thread, str(round(current*100 / total, 0)) + "%", channel.id),
+                                loop=client.loop)
+                        model_callback_limiter = time.time()
+                model.load_autosplit(cache, progress=False, callback=model_load_callback)
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -728,10 +746,6 @@ async def async_watcher():
                 current_gen.character.write_history(
                     history)  # if message is edited or deleted during generation, it needs to be reflected
             model_input = history_to_llama(history, current_gen.character.config)
-            if isinstance(current_gen.thread, discord.Thread):
-                thread, channel = current_gen.thread, current_gen.thread.parent
-            else:
-                thread, channel = None, current_gen.thread
             message = current_gen.character_message
             character = current_gen.character
             tokens = 0
@@ -780,18 +794,20 @@ async def async_watcher():
                         final_response = final_response + text
                         if "<|eot_id|>" in response:
                             eos = True
+                            final_response = final_response.replace("<|eot_id|>", "")
                             response = response.replace("<|eot_id|>", "")
                             if "<-" in response and character.maw and not isinstance(
                                     message.channel, discord.DMChannel):
-                                find_json = re.compile(r'<-[\S\s]+>')
-                                for image in re.findall(find_json, response):
+                                find_image = re.compile(r'<-[\S\s]+>')
+                                for image in re.findall(find_image, final_response):
                                     print("image detected")
+                                    final_response = final_response.replace(image, "")
                                     image = image[2:-1]
                                     if image[-1] == "-": image = image[:-1]
                                     if image != "":
                                         with open("../DanteMode/queue.txt", "a") as image_queue:
-                                            image_queue.write("\n" + str(channel.id) + "|" + str(image).replace("\n", "\\n"))
-                                    final_response = final_response.replace(image, "")
+                                            image_queue.write(
+                                                "\n" + str(channel.id) + "|" + str(image).replace("\n", "\\n"))
                         if time.time() - limiter > 1.0:
                             limiter = time.time()
                             if character.maw:
