@@ -6,10 +6,9 @@ import re
 import sys
 from queue import Queue
 
-#import nextcord as discord
-import discord
+import nextcord as discord
 import numpy as np
-from discord.ext import voice_recv
+from nextcord.ext import voice_recv
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
@@ -888,7 +887,16 @@ class TimeStampedVoiceData:
 
 
 def voice_channel_listener(proto, callback):
-    proto.listen(voice_recv.BasicSink(callback))
+    print("Starting channel listener")
+    try:
+        sink = voice_recv.BasicSink(callback)
+        proto.listen(sink)
+    except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
+        print(repr(e))
+        raise e
 
 
 def load_whisper():
@@ -925,6 +933,7 @@ def request_whisper_text(audio):
 
 def user_listener(session, user, proto):
     global voice_data
+    print("Started user listener, adjusting audio")
     recognizer = sr.Recognizer()
     recognizer.energy_threshold = 1000
     recognizer.dynamic_energy_threshold = False
@@ -938,6 +947,7 @@ def user_listener(session, user, proto):
         data = audio.get_raw_data()
         dq.put(data)
     recognizer.listen_in_background(voice_data[session][user], phrase_time_limit=rt)
+    print("Finished setting up audio")
     while proto.is_connected():
         if not dq.empty():
             now = datetime.datetime.now(datetime.UTC)
@@ -969,15 +979,18 @@ def voice_channel_watcher(session):
     guild = session.guild
     message = session.message
     thread = session.thread
-    proto = message.proto
+    proto = session.proto
     global voice_data
     voice_data[session] = {}
     users = []
+    print("Started watcher")
     def voice_callback(user, data: voice_recv.VoiceData):
+        print("received audio data")
         if isinstance(data, voice_recv.SilencePacket):
             return
         if user is None:
             return
+        global voice_data
         try:
             voice_data[session][user]
         except:
@@ -985,14 +998,18 @@ def voice_channel_watcher(session):
             users.append(user)
         else:
             voice_data[session][user].extend(data.pcm)
-    threading.Thread(target=voice_channel_listener, args=[proto, voice_callback])
+    threading.Thread(target=voice_channel_listener, args=[proto, voice_callback]).start()
     user_threads = {}
+    print("Got to scalable connections state")
     while proto.is_connected():
         for user in users:
+            print(users)
             if user not in user_threads.keys():
+                print(user)
                 user_threads[user] = threading.Thread(target=user_listener, args=[session, user, proto])
                 user_threads[user].start()
         time.sleep(0.01)
+    print("No longer connected")
     del voice_data[session]
 
 
@@ -1260,7 +1277,9 @@ async def voice(
             sent_message = await interaction.response.send_message("Starting a voice session in " + str(channel.name))
             sent_message = await sent_message.fetch()
             thread = await sent_message.create_thread(name="Maw Voice Session")
-            maw_voice_channels.append(MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto))
+            session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto)
+            maw_voice_channels.append(session)
+            threading.Thread(target=voice_channel_watcher, args=[session]).start()
         except Exception as e:
             print(repr(e))
             await interaction.response.send_message("Failed to connect to that channel!")
