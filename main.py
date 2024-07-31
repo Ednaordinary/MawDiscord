@@ -4,7 +4,11 @@ import os
 import gc
 import re
 import sys
-import nextcord as discord
+from queue import Queue
+
+#import nextcord as discord
+import discord
+import numpy as np
 from discord.ext import voice_recv
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
@@ -17,6 +21,9 @@ import asyncio
 from typing import Optional
 import vram
 from random import randint
+import speech_recognition as sr
+import datetime
+import whisper
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -31,6 +38,9 @@ client = discord.AutoShardedClient(intents=intents)
 discord.opus._load_default()
 all_tokens = 0
 all_time = 0
+whisper_model = None
+whisperloading = False
+whisperusers = 0
 model_callback_limiter = 1 # doesn't matter what this value is
 maw_voice_channels = []
 os.environ["OMP_NUM_THREADS"] = "16"
@@ -881,6 +891,78 @@ def voice_channel_listener(proto, callback):
     proto.listen(voice_recv.BasicSink(callback))
 
 
+def load_whisper():
+    #this is done in a new thread because it HAS to complete successfully
+    global whisper_model
+    global whisper_loading
+    if not whisper_model:
+        if not whisper_loading:
+            whisper_loading = True
+            try:
+                whisper_model = whisper.load_model("medium.en", device='cuda')
+            except Exception as e:
+                print(repr(e))
+                pass
+            whisper_loading = False
+
+
+
+def request_whisper_text(audio):
+    global whisper_model
+    global whisper_loading
+    global whisper_users
+    whisper_users += 1
+    threading.Thread(target=load_whisper).start()
+    while whisper == None:
+        time.sleep(0.01)
+    whisper_model.transcribe(audio, fp16=True)
+    whisper_users -= 1
+    if whisper_users == 0:
+        whisper_model = None
+        whisper_loading = False
+        gc.collect()
+        torch.cuda.empty_cache()
+
+def user_listener(session, user, proto):
+    global voice_data
+    recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 1000
+    recognizer.dynamic_energy_threshold = False
+    recognizer.adjust_for_ambient_noise(voice_data[session][user])
+    dq = Queue()
+    rt = 1.0
+    pto = 1.0
+    pt = None
+    transcript = ['']
+    def record_callback(_, audio:sr.AudioData) -> None:
+        data = audio.get_raw_data()
+        dq.put(data)
+    recognizer.listen_in_background(voice_data[session][user], phrase_time_limit=rt)
+    while proto.is_connected():
+        if not dq.empty():
+            now = datetime.datetime.now(datetime.UTC)
+            phrase_complete = False
+            if pt and now - pt > datetime.timedelta(seconds=pto):
+                phrase_complete = True
+            pt = now
+            audio_data = b''.join(dq.queue)
+            dq.queue.clear()
+            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            result = request_whisper_text(audio_np)
+            text = result('text').strip()
+            if phrase_complete:
+                transcript.append(text)
+            else:
+                transcript[-1] = text
+            if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
+                hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.channel),
+                                                 loop=client.loop).result()
+                asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript)), username=user.nick if user.nick else user.global_name, avatar_url=user.display_avatar.url,
+                    loop=client.loop)
+                transcript = ['']
+                pass
+        else:
+            time.sleep(0.01)
 
 
 def voice_channel_watcher(session):
@@ -890,6 +972,7 @@ def voice_channel_watcher(session):
     proto = message.proto
     global voice_data
     voice_data[session] = {}
+    users = []
     def voice_callback(user, data: voice_recv.VoiceData):
         if isinstance(data, voice_recv.SilencePacket):
             return
@@ -899,27 +982,19 @@ def voice_channel_watcher(session):
             voice_data[session][user]
         except:
             voice_data[session][user] = [data.pcm]
-            #voice_data[session][user] = [TimeStampedVoiceData(data, time=time.time())]
+            users.append(user)
         else:
-            voice_data[session][user].append(TimeStampedVoiceData(data, time=time.time()))
+            voice_data[session][user].extend(data.pcm)
     threading.Thread(target=voice_channel_listener, args=[proto, voice_callback])
+    user_threads = {}
     while proto.is_connected():
+        for user in users:
+            if user not in user_threads.keys():
+                user_threads[user] = threading.Thread(target=user_listener, args=[session, user, proto])
+                user_threads[user].start()
         time.sleep(0.01)
-        if voice_data[session] != {}:
-            for user, data in voice_data.items():
-                temp_data = []
-                for packet in data:
-                    power_level = packet.extension_data.get(voice_recv.ExtensionID.audio_power)
-                    power_level = int.from_bytes(power_level, 'big')
-                    power_level = 127 - (power_level & 127)
-                    power_level = int(power_level * (100/128)) # normalize to max 100
-                    if power_level > 50:
-                        temp_data.append(packet)
-                if temp_data != []:
-                    if temp_data[-1].time < time.time() - 2.5:
-                        temp_data = []
-                        for packet in data:
-                            temp_data.append(packet.opus())
+    del voice_data[session]
+
 
 
 @client.event
@@ -1186,7 +1261,8 @@ async def voice(
             sent_message = await sent_message.fetch()
             thread = await sent_message.create_thread(name="Maw Voice Session")
             maw_voice_channels.append(MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto))
-        except:
+        except Exception as e:
+            print(repr(e))
             await interaction.response.send_message("Failed to connect to that channel!")
     else:
         await interaction.response.send_message("Already connected to a channel in this server!")

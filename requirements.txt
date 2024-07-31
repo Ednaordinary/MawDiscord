@@ -17,3 +17,5 @@ optimum
 auto-gptq
 exllamav2
 discord-ext-voice-recv
+SpeechRecognition
+git+https://github.com/openai/whisper.git
