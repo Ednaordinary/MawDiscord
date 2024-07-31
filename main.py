@@ -26,6 +26,7 @@ from random import randint
 import speech_recognition as sr
 import datetime
 import whisper
+from pyogg import OpusDecoder
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -926,7 +927,9 @@ async def async_voice_channel_listener(proto, session):
     print("Starting channel listener")
     try:
         global voice_data
-        decoder = discord.opus.Decoder()
+        decoder = OpusDecoder()
+        decoder.set_channels(2)
+        decoder.set_sampling_frequency(48000)
         async for data in proto.listen():
             if 200 <= data[1] <= 204:
                 continue
@@ -940,9 +943,11 @@ async def async_voice_channel_listener(proto, session):
             try:
                 voice_data[session][user_id]
             except:
-                voice_data[session][user_id] = decoder.decode(opus_frame.decrypted_data, fec=False)
+                decoded = decoder.decode(opus_frame.decrypted_data)
+                voice_data[session][user_id] = decoded
             else:
-                voice_data[session][user_id].extend(decoder.decode(opus_frame.decrypted_data, fec=False))
+                decoded = decoder.decode(opus_frame.decrypted_data)
+                voice_data[session][user_id].extend(decoded)
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
