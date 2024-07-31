@@ -5,10 +5,13 @@ import gc
 import re
 import sys
 from queue import Queue
+from struct import unpack_from
 
 import nextcord as discord
 import numpy as np
-from nextcord.ext import voice_recv
+
+import decrypter
+from recorder import VoiceRecvClient
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
@@ -885,18 +888,71 @@ class TimeStampedVoiceData:
         self.data = data
         self.time = time
 
+class OpusFrame:
+    def __init__(
+        sequence: int,
+        timestamp: float,
+        received_timestamp: float,
+        ssrc: int,
+        decrypted_data: Optional[bytes],
+        decoded_data: Optional[bytes] = None,
+        user_id: Optional[int] = (None),
+    ):
+        pass
 
-def voice_channel_listener(proto, callback):
+    @property)
+    def is_silent(self):
+        return self.decrypted_data == b"\xf8\xff\xfe"
+
+    def __repr__(self) -> str:
+        attrs = (
+            ("sequence", self.sequence),
+            ("timestamp", self.timestamp),
+            ("received_timestamp", self.received_timestamp),
+            ("ssrc", self.ssrc),
+            ("user_id", self.user_id),
+        )
+        joined = " ".join("%s=%r" % t for t in attrs)
+        return f"<{self.__class__.__name__} {joined}>"
+
+async def async_voice_channel_listener(proto, callback):
     print("Starting channel listener")
     try:
-        sink = voice_recv.BasicSink(callback)
-        proto.listen(sink)
+        async for data in proto.listen():
+            if 200 <= data[1] <= 204:
+                continue
+            data = bytearray(data)
+            header = data[:12]
+            data = data[12:]
+            sequence, timestamp, ssrc = unpack_from(">xxHII", header)
+            decrypted = proto.decrypt(header, data)
+            opus_frame = OpusFrame(sequence, timestamp, time.perf_counter(), ssrc, decrypted)
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
         print(exc_type, fname, exc_tb.tb_lineno)
         print(repr(e))
         raise e
+
+    # def voice_callback(user, data: voice_recv.VoiceData):
+    #     print("received audio data")
+    #     if isinstance(data, voice_recv.SilencePacket):
+    #         return
+    #     if user is None:
+    #         return
+    #     global voice_data
+    #     try:
+    #         voice_data[session][user]
+    #     except:
+    #         voice_data[session][user] = [data.pcm]
+    #         users.append(user)
+    #     else:
+    #         voice_data[session][user].extend(data.pcm)
+
+
+def voice_channel_listener(proto):
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(async_watcher(proto))
 
 
 def load_whisper():
@@ -984,21 +1040,21 @@ def voice_channel_watcher(session):
     voice_data[session] = {}
     users = []
     print("Started watcher")
-    def voice_callback(user, data: voice_recv.VoiceData):
-        print("received audio data")
-        if isinstance(data, voice_recv.SilencePacket):
-            return
-        if user is None:
-            return
-        global voice_data
-        try:
-            voice_data[session][user]
-        except:
-            voice_data[session][user] = [data.pcm]
-            users.append(user)
-        else:
-            voice_data[session][user].extend(data.pcm)
-    threading.Thread(target=voice_channel_listener, args=[proto, voice_callback]).start()
+    # def voice_callback(user, data: voice_recv.VoiceData):
+    #     print("received audio data")
+    #     if isinstance(data, voice_recv.SilencePacket):
+    #         return
+    #     if user is None:
+    #         return
+    #     global voice_data
+    #     try:
+    #         voice_data[session][user]
+    #     except:
+    #         voice_data[session][user] = [data.pcm]
+    #         users.append(user)
+    #     else:
+    #         voice_data[session][user].extend(data.pcm)
+    threading.Thread(target=voice_channel_listener, args=[proto]).start()
     user_threads = {}
     print("Got to scalable connections state")
     while proto.is_connected():
@@ -1273,7 +1329,7 @@ async def voice(
     global maw_voice_channels
     if not interaction.guild in [x.guild for x in maw_voice_channels]:
         try:
-            proto = await channel.connect(cls=voice_recv.VoiceRecvClient)
+            proto = await channel.connect(cls=VoiceRecvClient)
             sent_message = await interaction.response.send_message("Starting a voice session in " + str(channel.name))
             sent_message = await sent_message.fetch()
             thread = await sent_message.create_thread(name="Maw Voice Session")
