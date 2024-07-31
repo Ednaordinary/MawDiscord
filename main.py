@@ -890,6 +890,7 @@ class TimeStampedVoiceData:
 
 class OpusFrame:
     def __init__(
+        self,
         sequence: int,
         timestamp: float,
         received_timestamp: float,
@@ -898,9 +899,15 @@ class OpusFrame:
         decoded_data: Optional[bytes] = None,
         user_id: Optional[int] = (None),
     ):
-        pass
+        self.sequence = sequence
+        self.timestamp = timestamp
+        self.received_timestamp = received_timestamp
+        self.ssrc = ssrc
+        self.decrypted_data = decrypted_data
+        self.decoded_data = decoded_data
+        self.user_id = user_id
 
-    @property)
+    @property
     def is_silent(self):
         return self.decrypted_data == b"\xf8\xff\xfe"
 
@@ -915,9 +922,11 @@ class OpusFrame:
         joined = " ".join("%s=%r" % t for t in attrs)
         return f"<{self.__class__.__name__} {joined}>"
 
-async def async_voice_channel_listener(proto, callback):
+async def async_voice_channel_listener(proto, session):
     print("Starting channel listener")
     try:
+        global voice_data
+        decoder = discord.opus.Decoder()
         async for data in proto.listen():
             if 200 <= data[1] <= 204:
                 continue
@@ -927,6 +936,13 @@ async def async_voice_channel_listener(proto, callback):
             sequence, timestamp, ssrc = unpack_from(">xxHII", header)
             decrypted = proto.decrypt(header, data)
             opus_frame = OpusFrame(sequence, timestamp, time.perf_counter(), ssrc, decrypted)
+            user_id = proto._wait_for_user_id(ssrc)
+            try:
+                voice_data[session][user_id]
+            except:
+                voice_data[session][user_id] = decoder.decode(opus_frame.decrypted_data, fec=False)
+            else:
+                voice_data[session][user_id].extend(decoder.decode(opus_frame.decrypted_data, fec=False))
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -934,25 +950,10 @@ async def async_voice_channel_listener(proto, callback):
         print(repr(e))
         raise e
 
-    # def voice_callback(user, data: voice_recv.VoiceData):
-    #     print("received audio data")
-    #     if isinstance(data, voice_recv.SilencePacket):
-    #         return
-    #     if user is None:
-    #         return
-    #     global voice_data
-    #     try:
-    #         voice_data[session][user]
-    #     except:
-    #         voice_data[session][user] = [data.pcm]
-    #         users.append(user)
-    #     else:
-    #         voice_data[session][user].extend(data.pcm)
 
-
-def voice_channel_listener(proto):
+def voice_channel_listener(proto, session):
     loop = asyncio.new_event_loop()
-    loop.run_until_complete(async_watcher(proto))
+    loop.run_until_complete(async_voice_channel_listener(proto, session))
 
 
 def load_whisper():
@@ -1023,7 +1024,7 @@ def user_listener(session, user, proto):
             if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
                 hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.channel),
                                                  loop=client.loop).result()
-                asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript)), username=user.nick if user.nick else user.global_name, avatar_url=user.display_avatar.url,
+                asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.nick if user.nick else user.global_name, avatar_url=user.display_avatar.url),
                     loop=client.loop)
                 transcript = ['']
                 pass
@@ -1040,28 +1041,14 @@ def voice_channel_watcher(session):
     voice_data[session] = {}
     users = []
     print("Started watcher")
-    # def voice_callback(user, data: voice_recv.VoiceData):
-    #     print("received audio data")
-    #     if isinstance(data, voice_recv.SilencePacket):
-    #         return
-    #     if user is None:
-    #         return
-    #     global voice_data
-    #     try:
-    #         voice_data[session][user]
-    #     except:
-    #         voice_data[session][user] = [data.pcm]
-    #         users.append(user)
-    #     else:
-    #         voice_data[session][user].extend(data.pcm)
-    threading.Thread(target=voice_channel_listener, args=[proto]).start()
+    threading.Thread(target=voice_channel_listener, args=[proto, session]).start()
     user_threads = {}
     print("Got to scalable connections state")
     while proto.is_connected():
-        for user in users:
-            print(users)
-            if user not in user_threads.keys():
-                print(user)
+        for user_id in users:
+            if user_id not in user_threads.keys():
+                print(user_id)
+                user = client.get_user(user_id)
                 user_threads[user] = threading.Thread(target=user_listener, args=[session, user, proto])
                 user_threads[user].start()
         time.sleep(0.01)
