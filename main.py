@@ -5,6 +5,7 @@ import gc
 import re
 import sys
 import nextcord as discord
+from discord.ext import voice_recv
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
@@ -22,14 +23,16 @@ hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add 
 second_last_message = {}
 last_message = {}
 watched_avatars = []
+voice_data = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
-client = discord.Client(intents=intents)
+client = discord.AutoShardedClient(intents=intents)
+discord.opus._load_default()
 all_tokens = 0
 all_time = 0
 model_callback_limiter = 1 # doesn't matter what this value is
-
+maw_voice_channels = []
 os.environ["OMP_NUM_THREADS"] = "16"
 os.environ["TOKENIZERS_PARALLELISM"] = "1"
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -559,6 +562,13 @@ class CharacterGen:
         self.user_message = user_message
 
 
+class MawVoiceSession:
+    def __init__(self, guild, message, thread, proto):
+        self.guild = guild
+        self.message = message
+        self.thread = thread
+        self.proto = proto
+
 def make_maw_character(path, config):
     os.makedirs(path, exist_ok=True)
     with open(path + "/config.txt", "w") as config_file:
@@ -723,18 +733,18 @@ async def async_watcher():
                     thread, channel = None, current_gen.thread
                 model = ExLlamaV2(config)
                 cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=500 * 256)
-                global model_callback_limiter
+                global model_callback_limiter # no concurrent load, so global is okay
                 model_callback_limiter = time.time()
                 def model_load_callback(current, total):
                     print(current, total)
                     global model_callback_limiter
-                    if time.time() > model_callback_limiter + 0.5:
+                    if time.time() > model_callback_limiter + 0.5: # only bursts for the first second or so, so its rate can be higher
                         if current_gen.character.maw:
-                            asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(str(round(current*100 / total, 0)) + "%"),
+                            asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(str(int(current*100 / total)) + "%"),
                                                              loop=client.loop)
                         else:
                             asyncio.run_coroutine_threadsafe(
-                                coro=temp_edit(current_gen.character_message.id, thread, str(round(current*100 / total, 0)) + "%", channel.id),
+                                coro=temp_edit(current_gen.character_message.id, thread, str(int(current*100 / total)) + "%", channel.id),
                                 loop=client.loop)
                         model_callback_limiter = time.time()
                 model.load_autosplit(cache, progress=False, callback=model_load_callback)
@@ -808,7 +818,7 @@ async def async_watcher():
                                         with open("../DanteMode/queue.txt", "a") as image_queue:
                                             image_queue.write(
                                                 "\n" + str(channel.id) + "|" + str(image).replace("\n", "\\n"))
-                        if time.time() - limiter > 1.0:
+                        if time.time() - limiter > 1.2:
                             limiter = time.time()
                             if character.maw:
                                 asyncio.run_coroutine_threadsafe(coro=message.edit(final_response), loop=client.loop)
@@ -859,6 +869,57 @@ async def async_watcher():
 def watcher():
     loop = asyncio.new_event_loop()
     loop.run_until_complete(async_watcher())
+
+
+class TimeStampedVoiceData:
+    def __init__(self, data, time):
+        self.data = data
+        self.time = time
+
+
+def voice_channel_listener(proto, callback):
+    proto.listen(voice_recv.BasicSink(callback))
+
+
+
+
+def voice_channel_watcher(session):
+    guild = session.guild
+    message = session.message
+    thread = session.thread
+    proto = message.proto
+    global voice_data
+    voice_data[session] = {}
+    def voice_callback(user, data: voice_recv.VoiceData):
+        if isinstance(data, voice_recv.SilencePacket):
+            return
+        if user is None:
+            return
+        try:
+            voice_data[session][user]
+        except:
+            voice_data[session][user] = [data.pcm]
+            #voice_data[session][user] = [TimeStampedVoiceData(data, time=time.time())]
+        else:
+            voice_data[session][user].append(TimeStampedVoiceData(data, time=time.time()))
+    threading.Thread(target=voice_channel_listener, args=[proto, voice_callback])
+    while proto.is_connected():
+        time.sleep(0.01)
+        if voice_data[session] != {}:
+            for user, data in voice_data.items():
+                temp_data = []
+                for packet in data:
+                    power_level = packet.extension_data.get(voice_recv.ExtensionID.audio_power)
+                    power_level = int.from_bytes(power_level, 'big')
+                    power_level = 127 - (power_level & 127)
+                    power_level = int(power_level * (100/128)) # normalize to max 100
+                    if power_level > 50:
+                        temp_data.append(packet)
+                if temp_data != []:
+                    if temp_data[-1].time < time.time() - 2.5:
+                        temp_data = []
+                        for packet in data:
+                            temp_data.append(packet.opus())
 
 
 @client.event
@@ -1112,6 +1173,23 @@ async def reset(
     else:
         await interaction.response.send_message("No context found to clear.")
 
+@client.slash_command(description="Maw for voice channels", dm_permission=False)
+async def voice(
+        interaction: discord.Interaction,
+        channel: discord.VoiceChannel,
+):
+    global maw_voice_channels
+    if not interaction.guild in [x.guild for x in maw_voice_channels]:
+        try:
+            proto = await channel.connect(cls=voice_recv.VoiceRecvClient)
+            sent_message = await interaction.response.send_message("Starting a voice session in " + str(channel.name))
+            sent_message = await sent_message.fetch()
+            thread = await sent_message.create_thread(name="Maw Voice Session")
+            maw_voice_channels.append(MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto))
+        except:
+            await interaction.response.send_message("Failed to connect to that channel!")
+    else:
+        await interaction.response.send_message("Already connected to a channel in this server!")
 
 threading.Thread(target=watcher).start()
 client.run(TOKEN)

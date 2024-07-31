@@ -16,3 +16,4 @@ xformers
 optimum
 auto-gptq
 exllamav2
+discord-ext-voice-recv
