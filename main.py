@@ -1,9 +1,11 @@
+import array
 import io
 import json
 import os
 import gc
 import re
 import sys
+import wave
 from queue import Queue
 from struct import unpack_from
 
@@ -11,7 +13,7 @@ import nextcord as discord
 import numpy as np
 
 import decrypter
-from recorder import VoiceRecvClient
+from recorder import VoiceRecvClient, BytesSRAudioSource
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
@@ -684,7 +686,7 @@ async def edit_add_hookeditbutton(hook, message, content, thread):
     await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditMessageButton())
 
 
-async def get_webhook(channel):
+async def get_webhook(channel) -> discord.Webhook:
     # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
     try:
         hook = hook_list[channel.id]
@@ -943,10 +945,12 @@ async def async_voice_channel_listener(proto, session):
             try:
                 voice_data[session][user_id]
             except:
-                decoded = decoder.decode(opus_frame.decrypted_data)
-                voice_data[session][user_id] = decoded
+
+                decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
+                voice_data[session][user_id] = array.array('B')
+                voice_data[session][user_id].extend(decoded)
             else:
-                decoded = decoder.decode(opus_frame.decrypted_data)
+                decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
                 voice_data[session][user_id].extend(decoded)
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -964,42 +968,46 @@ def voice_channel_listener(proto, session):
 def load_whisper():
     #this is done in a new thread because it HAS to complete successfully
     global whisper_model
-    global whisper_loading
+    global whisperloading
     if not whisper_model:
-        if not whisper_loading:
-            whisper_loading = True
+        if not whisperloading:
+            whisperloading = True
             try:
                 whisper_model = whisper.load_model("medium.en", device='cuda')
             except Exception as e:
                 print(repr(e))
                 pass
-            whisper_loading = False
+            whisperloading = False
 
 
 
 def request_whisper_text(audio):
     global whisper_model
-    global whisper_loading
-    global whisper_users
-    whisper_users += 1
-    threading.Thread(target=load_whisper).start()
+    global whisperloading
+    global whisperusers
+    whisperusers += 1
+    whisper_load = threading.Thread(target=load_whisper)
+    whisper_load.start()
+    whisper_load.join()
     while whisper == None:
         time.sleep(0.01)
-    whisper_model.transcribe(audio, fp16=True)
-    whisper_users -= 1
-    if whisper_users == 0:
+    transcribed_text = whisper_model.transcribe(audio, fp16=True, hallucination_silence_threshold=2)
+    whisperusers -= 1
+    if whisperusers == 0:
         whisper_model = None
-        whisper_loading = False
+        whisperloading = False
         gc.collect()
         torch.cuda.empty_cache()
+    return transcribed_text
 
 def user_listener(session, user, proto):
     global voice_data
     print("Started user listener, adjusting audio")
+    source = BytesSRAudioSource(voice_data[session][user.id])
     recognizer = sr.Recognizer()
     recognizer.energy_threshold = 1000
     recognizer.dynamic_energy_threshold = False
-    recognizer.adjust_for_ambient_noise(voice_data[session][user])
+    recognizer.adjust_for_ambient_noise(source)
     dq = Queue()
     rt = 1.0
     pto = 1.0
@@ -1008,8 +1016,9 @@ def user_listener(session, user, proto):
     def record_callback(_, audio:sr.AudioData) -> None:
         data = audio.get_raw_data()
         dq.put(data)
-    recognizer.listen_in_background(voice_data[session][user], phrase_time_limit=rt)
+    recognizer.listen_in_background(source, record_callback, phrase_time_limit=rt)
     print("Finished setting up audio")
+    num = 0
     while proto.is_connected():
         if not dq.empty():
             now = datetime.datetime.now(datetime.UTC)
@@ -1021,15 +1030,19 @@ def user_listener(session, user, proto):
             dq.queue.clear()
             audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
             result = request_whisper_text(audio_np)
-            text = result('text').strip()
+            text = result['text'].strip()
             if phrase_complete:
                 transcript.append(text)
             else:
                 transcript[-1] = text
             if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
-                hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.channel),
+                wave_write = wave.open("temp-" + str(num) + ".wav", "wb")
+                num += 1
+                wave_write.writeframes(audio_data)
+                wave_write.close()
+                hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
                                                  loop=client.loop).result()
-                asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.nick if user.nick else user.global_name, avatar_url=user.display_avatar.url),
+                asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread),
                     loop=client.loop)
                 transcript = ['']
                 pass
@@ -1044,18 +1057,18 @@ def voice_channel_watcher(session):
     proto = session.proto
     global voice_data
     voice_data[session] = {}
-    users = []
     print("Started watcher")
     threading.Thread(target=voice_channel_listener, args=[proto, session]).start()
     user_threads = {}
     print("Got to scalable connections state")
     while proto.is_connected():
-        for user_id in users:
+        for user_id in voice_data[session].keys():
             if user_id not in user_threads.keys():
                 print(user_id)
                 user = client.get_user(user_id)
-                user_threads[user] = threading.Thread(target=user_listener, args=[session, user, proto])
-                user_threads[user].start()
+                print(user)
+                user_threads[user_id] = threading.Thread(target=user_listener, args=[session, user, proto])
+                user_threads[user_id].start()
         time.sleep(0.01)
     print("No longer connected")
     del voice_data[session]
