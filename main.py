@@ -13,6 +13,7 @@ from struct import unpack_from
 import librosa
 import nextcord as discord
 import numpy as np
+import scipy
 import soundfile
 
 import decrypter
@@ -790,9 +791,6 @@ async def async_watcher():
                         cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=cache_amount * 256)
                     else:
                         break
-            if current_gen.vc:
-                vc_session = current_gen.vc
-                vc_response = ""
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -833,6 +831,11 @@ async def async_watcher():
             )
             response = ""
             final_response = ""
+            if current_gen.vc:
+                vc_session = current_gen.vc
+                vc_response = ""
+            else:
+                vc_session = None
             generator.enqueue(job)
             eos = False
             start_time = time.time()
@@ -851,15 +854,17 @@ async def async_watcher():
                             vc_response += text
                             if "<|eot_id|>" in vc_response:
                                 vc_response = vc_response.replace("<|eot_id|>", "")
-                            if "." in vc_response:
                                 voice_queue[vc_session].append(vc_response)
                                 vc_response = ""
-                            if "?" in vc_response:
-                                voice_queue[vc_session].append(vc_response)
-                                vc_response = ""
-                            if "!" in vc_response:
-                                voice_queue[vc_session].append(vc_response)
-                                vc_response = ""
+                            # elif "." in vc_response:
+                            #     voice_queue[vc_session].append(vc_response)
+                            #     vc_response = ""
+                            # elif "?" in vc_response:
+                            #     voice_queue[vc_session].append(vc_response)
+                            #     vc_response = ""
+                            # elif "!" in vc_response:
+                            #     voice_queue[vc_session].append(vc_response)
+                            #     vc_response = ""
                         if "<|eot_id|>" in response:
                             eos = True
                             final_response = final_response.replace("<|eot_id|>", "")
@@ -1113,9 +1118,8 @@ def user_listener(session, user, proto):
                     pt = now
                     audio_data = b''.join(dq.queue)
                     dq.queue.clear()
-                    new_samples = round(len(audio_data) * 16000.0 / 48000)
-                    print(new_samples)
-                    if new_samples != 0: # only transcribe if there is something to transcribe
+                    print(len(audio_data))
+                    if len(audio_data) > 400: # only transcribe if there is something to transcribe
                         audiobytes = io.BytesIO()
                         wave_write = wave.open(audiobytes, "wb")
                         wave_write.setnchannels(1)
@@ -1194,7 +1198,7 @@ def play_queue(proto, session):
             for idx, speech in enumerate(queue):
                 print("speaking")
                 sourcebytes = io.BytesIO(speech)
-                source = discord.FFmpegOpusAudio(sourcebytes, bitrate=256, pipe=True)
+                source = discord.FFmpegPCMAudio(sourcebytes, pipe=True, options='-vn') # , bitrate=128
                 proto.play(source)
                 while proto.is_playing():
                     time.sleep(0.01)
@@ -1231,13 +1235,12 @@ def voice_channel_watcher(session):
             print("Making sentence:", data)
             try:
                 play_audio, s_prev = request_speech(data, s_prev)
+                print(play_audio)
                 with io.BytesIO() as play_bytes:
-                    wave_write = wave.open(play_bytes, "wb")
-                    wave_write.setnchannels(1)
-                    wave_write.setsampwidth(2)
-                    wave_write.setframerate(24000)
-                    wave_write.writeframes(play_audio)
-                    wave_write.close()
+                    empty_torch = [0.0]*12000 # so it doesn't cut off
+                    play_audio = play_audio * 2
+                    play_audio = np.concatenate((play_audio, empty_torch))
+                    scipy.io.wavfile.write(play_bytes, rate=24000, data=play_audio)
                     play_bytes.seek(0)
                     voice_play[session].append(play_bytes.read())
                 voice_queue[session].pop(idx)
@@ -1248,7 +1251,7 @@ def voice_channel_watcher(session):
     print("No longer connected")
     del voice_data[session]
     global maw_voice_channels
-    for x, idx in enumerate(maw_voice_channels):
+    for idx, x in enumerate(maw_voice_channels):
         if x == session:
             maw_voice_channels.pop(idx)
     global whisperusers
@@ -1536,9 +1539,9 @@ async def voice(
             session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto, exclusive=transcribe_only)
             maw_voice_channels.append(session)
             # This thread must occur first otherwise whisper freaks out (I think?)
-            speech_thread = threading.Thread(target=load_speech)
-            speech_thread.start()
-            #speech_thread.join()
+            if not transcribe_only:
+                speech_thread = threading.Thread(target=load_speech)
+                speech_thread.start()
             threading.Thread(target=load_whisper).start()
             global whisperusers
             whisperusers += 1
