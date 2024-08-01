@@ -59,6 +59,10 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 
+dm_system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to "
+regular_system_prompt = "\nYou are Maw, an intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message.\n\nYou are able to generate or create images by making a generation prompt: enclose a description of an image in <- and ->, for example: <-A hot dog on a grill, the grill sits on a wooden table with condiments on it->. Do not generate an image unless explicitly asked to do so.\nIf asked to generate an image, add a short description or acknowledgement before you add the generation prompt.\n\nYou are talking in a server named "
+
+
 # this class is only used by characters
 class CharacterModal(discord.ui.Modal):
     def __init__(self, avatar, locked):
@@ -404,7 +408,7 @@ class RedoMessageButton(discord.ui.View):
             await interaction.response.edit_message(content="...")
             model_queue.append(
                 CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
-                             user_message=None))
+                             user_message=None, vc=False))
         else:
             await interaction.response.edit_message(view=None)
 
@@ -439,7 +443,7 @@ class EditAndRedoMessageButton(discord.ui.View):
                 await interaction.response.edit_message(content="...")
                 model_queue.append(
                     CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
-                                 user_message=None))
+                                 user_message=None, vc=False))
             else:
                 await interaction.response.edit_message(view=None)
 
@@ -575,19 +579,21 @@ class MawCharacter:
 
 
 class CharacterGen:
-    def __init__(self, character_message, character, thread, user_message):
+    def __init__(self, character_message, character, thread, user_message, vc):
         self.character_message = character_message
         self.character = character
         self.thread = thread
         self.user_message = user_message
+        self.vc = vc
 
 
 class MawVoiceSession:
-    def __init__(self, guild, message, thread, proto):
+    def __init__(self, guild, message, thread, proto, exclusive):
         self.guild = guild
         self.message = message
         self.thread = thread
         self.proto = proto
+        self.exclusive = exclusive
 
 def make_maw_character(path, config):
     os.makedirs(path, exist_ok=True)
@@ -983,26 +989,17 @@ def load_whisper():
                 print(repr(e))
                 pass
             whisperloading = False
+        else:
+            while whisper_model == None:
+                time.sleep(0.01)
 
 
 
 def request_whisper_text(audio):
     global whisper_model
-    global whisperloading
-    global whisperusers
-    whisperusers += 1
-    whisper_load = threading.Thread(target=load_whisper)
-    whisper_load.start()
-    whisper_load.join()
-    while whisper == None:
+    while whisper_model == None:
         time.sleep(0.01)
     transcribed_text = whisper_model.transcribe(audio, fp16=True, hallucination_silence_threshold=2)
-    whisperusers -= 1
-    if whisperusers == 0:
-        whisper_model = None
-        whisperloading = False
-        gc.collect()
-        torch.cuda.empty_cache()
     return transcribed_text
 
 
@@ -1011,12 +1008,12 @@ def user_listener(session, user, proto):
     print("Started user listener, adjusting audio")
     source = BytesSRAudioSource(voice_data[session][user.id])
     recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 1000
-    recognizer.dynamic_energy_threshold = False
+    recognizer.energy_threshold = 1200
+    recognizer.dynamic_energy_threshold = True
     recognizer.adjust_for_ambient_noise(source)
     dq = Queue()
-    rt = 1.0
-    pto = 1.0
+    rt = 20.0
+    pto = 4.0
     pt = None
     transcript = ['']
     def record_callback(_, audio:sr.AudioData) -> None:
@@ -1048,34 +1045,46 @@ def user_listener(session, user, proto):
                 wave_write.writeframes(audio_data)
                 wave_write.close()
                 audiobytes.seek(0)
-                #sample_rate, scipyaudiodata = wavfile.read(audiobytes)
-                #wavfile.write("text.wav", 48000, scipyaudiodata)
-                #scipyaudiodata = resample(scipyaudiodata, new_samples)
-                new_audiobytes = io.BytesIO()
-                audioresampled = librosa.load(audiobytes, sr=16000)[0]
-                audioresampled = np.array([audioresampled]*2)
-                soundfile.write(new_audiobytes, audioresampled, samplerate=16000, format="wav", subtype='PCM_16')
-                soundfile.write("text.wav", audioresampled, samplerate=16000)
-                wave_read = wave.open(new_audiobytes, "rb")
-                frame_count = wave_read.getnframes()
-                new_audio = wave_read.readframes(frame_count)
-                #wavfile.write(new_audiobytes, 16000, scipyaudiodata)
-                wavfile.write("text-1.wav", 16000, audioresampled)
-                if not np.all(audioresampled <= 0.1): # basically just silence
-                    audio_np = np.frombuffer(new_audio, dtype=np.int16).astype(np.float32) / 32768.0
-                    print(audio_np)
-                    result = request_whisper_text(audio_np)
-                    text = result['text'].strip()
-                    if phrase_complete:
-                        transcript.append(text)
-                    else:
-                        transcript[-1] = text
+                audio_np = librosa.load(audiobytes, sr=16000)[0]
+                result = request_whisper_text(audio_np)
+                text = result['text'].strip()
+                if phrase_complete:
+                    transcript.append(text)
+                else:
+                    transcript[-1] = text
             #if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
-            if ''.join(transcript).strip() != '':
+            if ''.join(transcript).strip() != '' and ''.join(transcript).strip() != 'you':
                 hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
                                                  loop=client.loop).result()
-                asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread),
+                user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread),
                     loop=client.loop)
+                if not session.exclusive:
+                    print("Session isn't exclusive")
+                    if "." in ''.join(transcript) or "?" in ''.join(transcript) or "!" in ''.join(transcript):
+                        print("Found prompt in text")
+                        # I could simply use on_message, but it's easier, faster to handle it here
+                        user_hook_message = user_hook_message.result()
+                        maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
+                            loop=client.loop)
+                        relative_path = "./servers/" + str(session.guild.id)
+                        if os.path.isdir(relative_path):
+                            config = read_config(relative_path)
+                            config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
+                            character = MawCharacter("Maw", config, True)
+                            if os.path.isfile(relative_path + "/history.txt"):
+                                history = character.read_history()
+                        else:
+                            system_prompt = regular_system_prompt
+                            config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
+                                                        relative_path + "/history.txt", "Maw", None, 0, 0)
+                            make_maw_character(relative_path, config)
+                            config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
+                            character = MawCharacter("Maw", config, True)
+                        user_message = MawCharacterMessage(content=user.global_name + " said: " + ''.join(transcript),
+                                                           message_id=str(user_hook_message.id), role="user")
+                        model_queue.append(
+                            CharacterGen(character_message=maw_message, character=character, thread=session.thread,
+                                         user_message=user_message, vc=session))
                 transcript = ['']
                 pass
         else:
@@ -1104,7 +1113,19 @@ def voice_channel_watcher(session):
         time.sleep(0.01)
     print("No longer connected")
     del voice_data[session]
-
+    global maw_voice_channels
+    for x, idx in enumerate(maw_voice_channels):
+        if x == session:
+            maw_voice_channels.pop(idx)
+    global whisperusers
+    whisperusers -= 1
+    if whisperusers == 0:
+        global whisper_model
+        whisper_model = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        global whisperloading
+        whisperloading = False
 
 
 @client.event
@@ -1125,6 +1146,7 @@ async def on_message(message):
     global second_last_message
     global last_message
     global watched_avatars
+    global maw_voice_channels
     maw_response = False
     character_response = False
     dm = False
@@ -1154,6 +1176,8 @@ async def on_message(message):
         dm = True
     if message.author.bot:
         character_response = False
+        maw_response = False
+    if message.channel in [x.thread for x in maw_voice_channels]:
         maw_response = False
     try:
         second_last_message[message.channel.id] = last_message[message.channel.id]
@@ -1208,11 +1232,10 @@ async def on_message(message):
                     pass
         else:
             if isinstance(message.channel, discord.DMChannel):
-                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to " + (
+                system_prompt = dm_system_prompt + (
                     message.author.global_name if message.author.global_name else message.author.name)
             else:
-                system_prompt = (
-                    "\nYou are Maw, an intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message.\n\nYou are able to generate or create images by making a generation prompt: enclose a description of an image in <- and ->, for example: <-A hot dog on a grill, the grill sits on a wooden table with condiments on it->. Do not generate an image unless explicitly asked to do so.\nIf asked to generate an image, add a short description or acknowledgement before you add the generation prompt.\n\nYou are talking in a server named ")
+                system_prompt = regular_system_prompt
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
@@ -1226,7 +1249,7 @@ async def on_message(message):
                                                        message.author.global_name if message.author.global_name else message.author.name) + " said: " + message.content.strip(),
                                            message_id=str(message.id), role="user")
         model_queue.append(CharacterGen(character_message=maw_message, character=character, thread=message.channel,
-                                        user_message=user_message))
+                                        user_message=user_message, vc=False))
         try:
             if isinstance(message.channel, discord.DMChannel):
                 old_message = await message.channel.fetch_message(old_message_id[0])
@@ -1262,7 +1285,7 @@ async def on_message(message):
             user_message = MawCharacterMessage(content=message.content, message_id=str(message.id), role="user")
             model_queue.append(
                 CharacterGen(character_message=character_message, character=character, thread=message.channel,
-                             user_message=user_message))
+                             user_message=user_message, vc=False))
             if old_message_id:
                 try:
                     await hook.edit_message(message_id=old_message_id, view=EditMessageButton(), thread=message.channel)
@@ -1362,16 +1385,25 @@ async def reset(
 async def voice(
         interaction: discord.Interaction,
         channel: discord.VoiceChannel,
+        transcribe_only: Optional[bool] = discord.SlashOption(
+            name="transcribe_only",
+            required=False,
+            description="Whether or not Maw responds to what you ask.",
+        ),
 ):
     global maw_voice_channels
+    if not transcribe_only: transcribe_only = False
     if not interaction.guild in [x.guild for x in maw_voice_channels]:
         try:
             proto = await channel.connect(cls=VoiceRecvClient)
             sent_message = await interaction.response.send_message("Starting a voice session in " + str(channel.name))
             sent_message = await sent_message.fetch()
             thread = await sent_message.create_thread(name="Maw Voice Session")
-            session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto)
+            session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto, exclusive=transcribe_only)
             maw_voice_channels.append(session)
+            load_whisper()
+            global whisperusers
+            whisperusers += 1
             threading.Thread(target=voice_channel_watcher, args=[session]).start()
         except Exception as e:
             print(repr(e))
