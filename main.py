@@ -1,5 +1,6 @@
 import array
 import io
+import itertools
 import json
 import os
 import gc
@@ -29,6 +30,7 @@ import speech_recognition as sr
 import datetime
 import whisper
 from pyogg import OpusDecoder
+from scipy.signal import resample
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -1000,6 +1002,7 @@ def request_whisper_text(audio):
         torch.cuda.empty_cache()
     return transcribed_text
 
+
 def user_listener(session, user, proto):
     global voice_data
     print("Started user listener, adjusting audio")
@@ -1018,7 +1021,7 @@ def user_listener(session, user, proto):
         dq.put(data)
     recognizer.listen_in_background(source, record_callback, phrase_time_limit=rt)
     print("Finished setting up audio")
-    num = 0
+    # num = 0
     while proto.is_connected():
         if not dq.empty():
             now = datetime.datetime.now(datetime.UTC)
@@ -1028,7 +1031,16 @@ def user_listener(session, user, proto):
             pt = now
             audio_data = b''.join(dq.queue)
             dq.queue.clear()
+            #audio_np = np.array(audio_data).astype(np.float32) / (2**15)
+            #resampled = resample(audio_np, num=(len(audio_data)*16000/48000))
+            #resampled = resampled / 32768.0
+            new_samples = round(len(audio_data) * 16000.0 / 48000)
+            print(new_samples)
+            if new_samples == 0:
+                continue
             audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            audio_np = resample(audio_np, num=new_samples)
+            print(audio_np)
             result = request_whisper_text(audio_np)
             text = result['text'].strip()
             if phrase_complete:
@@ -1036,10 +1048,13 @@ def user_listener(session, user, proto):
             else:
                 transcript[-1] = text
             if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
-                wave_write = wave.open("temp-" + str(num) + ".wav", "wb")
-                num += 1
-                wave_write.writeframes(audio_data)
-                wave_write.close()
+                # wave_write = wave.open("temp-48-" + str(num) + ".wav", "wb")
+                # num += 1
+                # wave_write.setnchannels(2)
+                # wave_write.setsampwidth(4)
+                # wave_write.setframerate(48000)
+                # wave_write.writeframes(audio_data)
+                # wave_write.close()
                 hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
                                                  loop=client.loop).result()
                 asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread),

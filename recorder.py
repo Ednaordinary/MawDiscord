@@ -86,7 +86,6 @@ class BytesSRAudioSource(sr.AudioSource):
             log.exception('Error closing sr audio source')
 
     def read(self, size: int) -> bytes:
-        # TODO: make this timeout configurable
         for _ in range(10):
             if len(self.buffer) < size * self.CHANNELS:
                 time.sleep(0.1)
