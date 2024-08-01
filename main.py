@@ -781,7 +781,15 @@ async def async_watcher():
                                 coro=temp_edit(current_gen.character_message.id, thread, str(int(current*100 / total)) + "%", channel.id),
                                 loop=client.loop)
                         model_callback_limiter = time.time()
-                model.load_autosplit(cache, progress=False, callback=model_load_callback)
+                cache_amount = 256
+                while True:
+                    try:
+                        model.load_autosplit(cache, progress=False, callback=model_load_callback)
+                    except Exception as e:
+                        cache_amount -= 50
+                        cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=cache_amount * 256)
+                    else:
+                        break
             if current_gen.vc:
                 vc_session = current_gen.vc
                 vc_response = ""
@@ -1029,12 +1037,13 @@ def request_speech(text, s_prev):
     while speech_model == None:
         time.sleep(0.01)
     try:
-        text += '.'
+        text = text + '.'
         noise = torch.randn(1, 1, 256).to("cuda")
         wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=2.0)
         return wav, s_prev
     except Exception as e:
         print(repr(e))
+        raise e
 
 
 def load_whisper():
@@ -1182,13 +1191,14 @@ def play_queue(proto, session):
             queue = voice_play[session]
             while queue == []:
                 time.sleep(0.01)
-            for speech in queue:
+            for idx, speech in enumerate(queue):
                 print("speaking")
                 sourcebytes = io.BytesIO(speech)
                 source = discord.FFmpegOpusAudio(sourcebytes, bitrate=256, pipe=True)
                 proto.play(source)
                 while proto.is_playing():
                     time.sleep(0.01)
+                queue.pop(idx)
         except Exception as e:
             print(repr(e))
 
@@ -1216,22 +1226,24 @@ def voice_channel_watcher(session):
                 print(user)
                 user_threads[user_id] = threading.Thread(target=user_listener, args=[session, user, proto])
                 user_threads[user_id].start()
-        for data in voice_queue[session]:
+        for idx, data in enumerate(voice_queue[session]):
             s_prev = None
-            for sentence in data.split("."):
-                print("Making sentence:", sentence)
-                try:
-                    play_audio, s_prev = request_speech(sentence, s_prev)
-                    with io.BytesIO() as play_bytes:
-                        wave_write = wave.open(play_bytes, "wb")
-                        wave_write.setnchannels(1)
-                        wave_write.setsampwidth(2)
-                        wave_write.setframerate(24000)
-                        wave_write.writeframes(play_audio)
-                        play_bytes.seek(0)
-                        voice_play.append(play_bytes)
-                except Exception as e:
-                    print(repr(e))
+            print("Making sentence:", data)
+            try:
+                play_audio, s_prev = request_speech(data, s_prev)
+                with io.BytesIO() as play_bytes:
+                    wave_write = wave.open(play_bytes, "wb")
+                    wave_write.setnchannels(1)
+                    wave_write.setsampwidth(2)
+                    wave_write.setframerate(24000)
+                    wave_write.writeframes(play_audio)
+                    wave_write.close()
+                    play_bytes.seek(0)
+                    voice_play[session].append(play_bytes.read())
+                voice_queue[session].pop(idx)
+            except Exception as e:
+                print(repr(e))
+                raise e
         time.sleep(0.01)
     print("No longer connected")
     del voice_data[session]
