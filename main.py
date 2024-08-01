@@ -10,8 +10,10 @@ import wave
 from queue import Queue
 from struct import unpack_from
 
+import librosa
 import nextcord as discord
 import numpy as np
+import soundfile
 
 import decrypter
 from recorder import VoiceRecvClient, BytesSRAudioSource
@@ -31,6 +33,7 @@ import datetime
 import whisper
 from pyogg import OpusDecoder
 from scipy.signal import resample
+from scipy.io import wavfile
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
@@ -1036,25 +1039,39 @@ def user_listener(session, user, proto):
             #resampled = resampled / 32768.0
             new_samples = round(len(audio_data) * 16000.0 / 48000)
             print(new_samples)
-            if new_samples == 0:
-                continue
-            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-            audio_np = resample(audio_np, num=new_samples)
-            print(audio_np)
-            result = request_whisper_text(audio_np)
-            text = result['text'].strip()
-            if phrase_complete:
-                transcript.append(text)
-            else:
-                transcript[-1] = text
-            if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
-                # wave_write = wave.open("temp-48-" + str(num) + ".wav", "wb")
-                # num += 1
-                # wave_write.setnchannels(2)
-                # wave_write.setsampwidth(4)
-                # wave_write.setframerate(48000)
-                # wave_write.writeframes(audio_data)
-                # wave_write.close()
+            if new_samples != 0: # only transcribe if there is something to transcribe
+                audiobytes = io.BytesIO()
+                wave_write = wave.open(audiobytes, "wb")
+                wave_write.setnchannels(1)
+                wave_write.setsampwidth(2)
+                wave_write.setframerate(48000)
+                wave_write.writeframes(audio_data)
+                wave_write.close()
+                audiobytes.seek(0)
+                #sample_rate, scipyaudiodata = wavfile.read(audiobytes)
+                #wavfile.write("text.wav", 48000, scipyaudiodata)
+                #scipyaudiodata = resample(scipyaudiodata, new_samples)
+                new_audiobytes = io.BytesIO()
+                audioresampled = librosa.load(audiobytes, sr=16000)[0]
+                audioresampled = np.array([audioresampled]*2)
+                soundfile.write(new_audiobytes, audioresampled, samplerate=16000, format="wav", subtype='PCM_16')
+                soundfile.write("text.wav", audioresampled, samplerate=16000)
+                wave_read = wave.open(new_audiobytes, "rb")
+                frame_count = wave_read.getnframes()
+                new_audio = wave_read.readframes(frame_count)
+                #wavfile.write(new_audiobytes, 16000, scipyaudiodata)
+                wavfile.write("text-1.wav", 16000, audioresampled)
+                if not np.all(audioresampled <= 0.1): # basically just silence
+                    audio_np = np.frombuffer(new_audio, dtype=np.int16).astype(np.float32) / 32768.0
+                    print(audio_np)
+                    result = request_whisper_text(audio_np)
+                    text = result['text'].strip()
+                    if phrase_complete:
+                        transcript.append(text)
+                    else:
+                        transcript[-1] = text
+            #if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
+            if ''.join(transcript).strip() != '':
                 hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
                                                  loop=client.loop).result()
                 asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread),
