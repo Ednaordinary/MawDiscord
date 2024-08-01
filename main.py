@@ -51,6 +51,7 @@ all_time = 0
 whisper_model = None
 whisperloading = False
 whisperusers = 0
+whispertranscribing = False
 model_callback_limiter = 1 # doesn't matter what this value is
 maw_voice_channels = []
 os.environ["OMP_NUM_THREADS"] = "16"
@@ -999,96 +1000,116 @@ def request_whisper_text(audio):
     global whisper_model
     while whisper_model == None:
         time.sleep(0.01)
-    transcribed_text = whisper_model.transcribe(audio, fp16=True, hallucination_silence_threshold=2)
+    global whispertranscribing
+    while whispertranscribing:
+        time.sleep(0.02)
+    whispertranscribing = True
+    try:
+        transcribed_text = whisper_model.transcribe(audio, fp16=True, hallucination_silence_threshold=2)
+    except:
+        transcribed_text = ""
+    whispertranscribing = False
     return transcribed_text
 
 
 def user_listener(session, user, proto):
-    global voice_data
-    print("Started user listener, adjusting audio")
-    source = BytesSRAudioSource(voice_data[session][user.id])
-    recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 1200
-    recognizer.dynamic_energy_threshold = True
-    recognizer.adjust_for_ambient_noise(source)
-    dq = Queue()
-    rt = 20.0
-    pto = 4.0
-    pt = None
-    transcript = ['']
-    def record_callback(_, audio:sr.AudioData) -> None:
-        data = audio.get_raw_data()
-        dq.put(data)
-    recognizer.listen_in_background(source, record_callback, phrase_time_limit=rt)
-    print("Finished setting up audio")
-    # num = 0
-    while proto.is_connected():
-        if not dq.empty():
-            now = datetime.datetime.now(datetime.UTC)
-            phrase_complete = False
-            if pt and now - pt > datetime.timedelta(seconds=pto):
-                phrase_complete = True
-            pt = now
-            audio_data = b''.join(dq.queue)
-            dq.queue.clear()
-            #audio_np = np.array(audio_data).astype(np.float32) / (2**15)
-            #resampled = resample(audio_np, num=(len(audio_data)*16000/48000))
-            #resampled = resampled / 32768.0
-            new_samples = round(len(audio_data) * 16000.0 / 48000)
-            print(new_samples)
-            if new_samples != 0: # only transcribe if there is something to transcribe
-                audiobytes = io.BytesIO()
-                wave_write = wave.open(audiobytes, "wb")
-                wave_write.setnchannels(1)
-                wave_write.setsampwidth(2)
-                wave_write.setframerate(48000)
-                wave_write.writeframes(audio_data)
-                wave_write.close()
-                audiobytes.seek(0)
-                audio_np = librosa.load(audiobytes, sr=16000)[0]
-                result = request_whisper_text(audio_np)
-                text = result['text'].strip()
-                if phrase_complete:
-                    transcript.append(text)
-                else:
-                    transcript[-1] = text
-            #if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
-            if ''.join(transcript).strip() != '' and ''.join(transcript).strip() != 'you':
-                hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
-                                                 loop=client.loop).result()
-                user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread),
-                    loop=client.loop)
-                if not session.exclusive:
-                    print("Session isn't exclusive")
-                    if "." in ''.join(transcript) or "?" in ''.join(transcript) or "!" in ''.join(transcript):
-                        print("Found prompt in text")
-                        # I could simply use on_message, but it's easier, faster to handle it here
-                        user_hook_message = user_hook_message.result()
-                        maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
-                            loop=client.loop)
-                        relative_path = "./servers/" + str(session.guild.id)
-                        if os.path.isdir(relative_path):
-                            config = read_config(relative_path)
-                            config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
-                            character = MawCharacter("Maw", config, True)
-                            if os.path.isfile(relative_path + "/history.txt"):
-                                history = character.read_history()
+    continue_thread = True
+    while continue_thread:
+        try:
+            global voice_data
+            print("Started user listener, adjusting audio")
+            source = BytesSRAudioSource(voice_data[session][user.id])
+            recognizer = sr.Recognizer()
+            recognizer.energy_threshold = 1200
+            recognizer.dynamic_energy_threshold = True
+            recognizer.adjust_for_ambient_noise(source)
+            dq = Queue()
+            rt = 20.0
+            pto = 4.0
+            pt = None
+            transcript = ['']
+            def record_callback(_, audio:sr.AudioData) -> None:
+                data = audio.get_raw_data()
+                dq.put(data)
+            recognizer.listen_in_background(source, record_callback, phrase_time_limit=rt)
+            print("Finished setting up audio")
+            # num = 0
+            while proto.is_connected():
+                if not dq.empty():
+                    now = datetime.datetime.now(datetime.UTC)
+                    phrase_complete = False
+                    if pt and now - pt > datetime.timedelta(seconds=pto):
+                        phrase_complete = True
+                    pt = now
+                    audio_data = b''.join(dq.queue)
+                    dq.queue.clear()
+                    #audio_np = np.array(audio_data).astype(np.float32) / (2**15)
+                    #resampled = resample(audio_np, num=(len(audio_data)*16000/48000))
+                    #resampled = resampled / 32768.0
+                    new_samples = round(len(audio_data) * 16000.0 / 48000)
+                    print(new_samples)
+                    if new_samples != 0: # only transcribe if there is something to transcribe
+                        audiobytes = io.BytesIO()
+                        wave_write = wave.open(audiobytes, "wb")
+                        wave_write.setnchannels(1)
+                        wave_write.setsampwidth(2)
+                        wave_write.setframerate(48000)
+                        wave_write.writeframes(audio_data)
+                        wave_write.close()
+                        audiobytes.seek(0)
+                        audio_np = librosa.load(audiobytes, sr=16000)[0]
+                        result = request_whisper_text(audio_np)
+                        text = result['text'].strip()
+                        if phrase_complete:
+                            transcript.append(text)
                         else:
-                            system_prompt = regular_system_prompt
-                            config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
-                                                        relative_path + "/history.txt", "Maw", None, 0, 0)
-                            make_maw_character(relative_path, config)
-                            config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
-                            character = MawCharacter("Maw", config, True)
-                        user_message = MawCharacterMessage(content=user.global_name + " said: " + ''.join(transcript),
-                                                           message_id=str(user_hook_message.id), role="user")
-                        model_queue.append(
-                            CharacterGen(character_message=maw_message, character=character, thread=session.thread,
-                                         user_message=user_message, vc=session))
-                transcript = ['']
-                pass
+                            transcript[-1] = text
+                    #if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
+                    if ''.join(transcript).strip() != '' and ''.join(transcript).strip() != 'you':
+                        hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
+                                                         loop=client.loop).result()
+                        if not session.exclusive:
+                            print("Session isn't exclusive")
+                            if "." in ''.join(transcript) or "?" in ''.join(transcript) or "!" in ''.join(transcript):
+                                print("Found prompt in text")
+                                # I could simply use on_message, but it's easier, faster, to handle it here
+                                user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread, wait=True), loop=client.loop).result()
+                                maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
+                                    loop=client.loop).result()
+                                relative_path = "./servers/" + str(session.guild.id)
+                                if os.path.isdir(relative_path):
+                                    config = read_config(relative_path)
+                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
+                                    character = MawCharacter("Maw", config, True)
+                                    if os.path.isfile(relative_path + "/history.txt"):
+                                        history = character.read_history()
+                                else:
+                                    system_prompt = regular_system_prompt
+                                    config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
+                                                                relative_path + "/history.txt", "Maw", None, 0, 0)
+                                    make_maw_character(relative_path, config)
+                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
+                                    character = MawCharacter("Maw", config, True)
+                                user_message = MawCharacterMessage(content=user.global_name + " said: " + ''.join(transcript),
+                                                                   message_id=str(user_hook_message.id), role="user")
+                                model_queue.append(
+                                    CharacterGen(character_message=maw_message, character=character, thread=session.thread,
+                                                 user_message=user_message, vc=session))
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                coro=hook.send(content=''.join(transcript), username=user.global_name,
+                                               avatar_url=user.display_avatar.url, thread=session.thread),
+                                loop=client.loop).result()
+                        transcript = ['']
+                        pass
+                else:
+                    time.sleep(0.01)
+        except Exception as e:
+            #It's important this stays on
+            print(repr(e))
+            continue_thread = True
         else:
-            time.sleep(0.01)
+            continue_thread = False
 
 
 def voice_channel_watcher(session):
@@ -1401,7 +1422,7 @@ async def voice(
             thread = await sent_message.create_thread(name="Maw Voice Session")
             session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto, exclusive=transcribe_only)
             maw_voice_channels.append(session)
-            load_whisper()
+            threading.Thread(target=load_whisper).start()
             global whisperusers
             whisperusers += 1
             threading.Thread(target=voice_channel_watcher, args=[session]).start()
