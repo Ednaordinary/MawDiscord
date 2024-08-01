@@ -35,12 +35,16 @@ from pyogg import OpusDecoder
 from scipy.signal import resample
 from scipy.io import wavfile
 
+from speech import SpeakerRunner
+
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
 second_last_message = {}
 last_message = {}
 watched_avatars = []
 voice_data = {}
+voice_queue = {}
+voice_play = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
@@ -52,6 +56,8 @@ whisper_model = None
 whisperloading = False
 whisperusers = 0
 whispertranscribing = False
+speech_model = None
+speechloading = None
 model_callback_limiter = 1 # doesn't matter what this value is
 maw_voice_channels = []
 os.environ["OMP_NUM_THREADS"] = "16"
@@ -646,7 +652,7 @@ def history_to_llama(history, config):
     )
     llama = []
     token_length = 0
-    print(config.system_prompt)
+    #print(config.system_prompt)
     system_prompt = tokenizer.apply_chat_template(
         conversation=[{"role": "system", "content": config.system_prompt.replace(r"\n", "\n")}],
         tokenize=True, return_tensors='pt', add_generation_prompt=False)
@@ -654,7 +660,7 @@ def history_to_llama(history, config):
     for idx, message in enumerate(history):
         role = "assistant" if message.role == "character" else message.role
         llama_message = [{"role": role, "content": message.content.replace(r"\n", "\n")}]
-        print(message.content)
+        #print(message.content)
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
         if token_length + llama_message.shape[1] < (128000 - system_prompt.shape[1]):
@@ -723,6 +729,7 @@ async def async_watcher():
     global all_tokens
     global all_time
     global model_queue
+    global voice_queue
     model = None
     cache = None
     model_dir = "./llama-3.1-8b-instruct-abliterated-exl2-7.5bpw"
@@ -775,6 +782,9 @@ async def async_watcher():
                                 loop=client.loop)
                         model_callback_limiter = time.time()
                 model.load_autosplit(cache, progress=False, callback=model_load_callback)
+            if current_gen.vc:
+                vc_session = current_gen.vc
+                vc_response = ""
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -827,8 +837,21 @@ async def async_watcher():
                         all_tokens += 1
                         tokens += 1
                         print(text, end="", flush=True)
-                        response = response + text
-                        final_response = final_response + text
+                        response += text
+                        final_response += text
+                        if vc_session:
+                            vc_response += text
+                            if "<|eot_id|>" in vc_response:
+                                vc_response = vc_response.replace("<|eot_id|>", "")
+                            if "." in vc_response:
+                                voice_queue[vc_session].append(vc_response)
+                                vc_response = ""
+                            if "?" in vc_response:
+                                voice_queue[vc_session].append(vc_response)
+                                vc_response = ""
+                            if "!" in vc_response:
+                                voice_queue[vc_session].append(vc_response)
+                                vc_response = ""
                         if "<|eot_id|>" in response:
                             eos = True
                             final_response = final_response.replace("<|eot_id|>", "")
@@ -985,6 +1008,35 @@ def voice_channel_listener(proto, session):
     loop.run_until_complete(async_voice_channel_listener(proto, session))
 
 
+def load_speech():
+    global speech_model
+    global speechloading
+    if not speech_model:
+        if not speechloading:
+            speechloading = True
+            try:
+                speech_model = SpeakerRunner()
+            except Exception as e:
+                raise e
+                speech_model = None
+        else:
+            while speech_model == None:
+                time.sleep(0.1)
+
+
+def request_speech(text, s_prev):
+    global speech_model
+    while speech_model == None:
+        time.sleep(0.01)
+    try:
+        text += '.'
+        noise = torch.randn(1, 1, 256).to("cuda")
+        wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=2.0)
+        return wav, s_prev
+    except Exception as e:
+        print(repr(e))
+
+
 def load_whisper():
     #this is done in a new thread because it HAS to complete successfully
     global whisper_model
@@ -1018,6 +1070,7 @@ def request_whisper_text(audio):
         transcribed_text = ""
     whispertranscribing = False
     return transcribed_text
+
 
 
 def user_listener(session, user, proto):
@@ -1072,7 +1125,7 @@ def user_listener(session, user, proto):
                     #if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
                     transcript_joined = ''.join(transcript).strip()
                     # hallucinations
-                    hallucination_list = ["Thank you.", "thank you.", "You're welcome.", "Thanks for watching!", "Please subscribe to my channel.", "See you next time.", "Thank you for watching!"]
+                    hallucination_list = ["Thank you.", "thank you.", "You're welcome.", "Thanks for watching!", "Please subscribe to my channel.", "See you next time.", "Thank you for watching!", "I'm sorry."]
                     for hallucination in hallucination_list:
                         transcript_joined = transcript_joined.replace(hallucination, "")
                     transcript_joined = transcript_joined.strip()
@@ -1122,6 +1175,22 @@ def user_listener(session, user, proto):
         else:
             continue_thread = False
 
+def play_queue(proto, session):
+    global voice_play
+    while True:
+        try:
+            queue = voice_play[session]
+            while queue == []:
+                time.sleep(0.01)
+            for speech in queue:
+                print("speaking")
+                sourcebytes = io.BytesIO(speech)
+                source = discord.FFmpegOpusAudio(sourcebytes, bitrate=256, pipe=True)
+                proto.play(source)
+                while proto.is_playing():
+                    time.sleep(0.01)
+        except Exception as e:
+            print(repr(e))
 
 def voice_channel_watcher(session):
     guild = session.guild
@@ -1129,7 +1198,12 @@ def voice_channel_watcher(session):
     thread = session.thread
     proto = session.proto
     global voice_data
+    global voice_queue
+    global voice_play
     voice_data[session] = {}
+    voice_queue[session] = []
+    voice_play[session] = []
+    threading.Thread(target=play_queue, args=[proto, session]).start()
     print("Started watcher")
     threading.Thread(target=voice_channel_listener, args=[proto, session]).start()
     user_threads = {}
@@ -1142,6 +1216,22 @@ def voice_channel_watcher(session):
                 print(user)
                 user_threads[user_id] = threading.Thread(target=user_listener, args=[session, user, proto])
                 user_threads[user_id].start()
+        for data in voice_queue[session]:
+            s_prev = None
+            for sentence in data.split("."):
+                print("Making sentence:", sentence)
+                try:
+                    play_audio, s_prev = request_speech(sentence, s_prev)
+                    with io.BytesIO() as play_bytes:
+                        wave_write = wave.open(play_bytes, "wb")
+                        wave_write.setnchannels(1)
+                        wave_write.setsampwidth(2)
+                        wave_write.setframerate(24000)
+                        wave_write.writeframes(play_audio)
+                        play_bytes.seek(0)
+                        voice_play.append(play_bytes)
+                except Exception as e:
+                    print(repr(e))
         time.sleep(0.01)
     print("No longer connected")
     del voice_data[session]
@@ -1433,6 +1523,10 @@ async def voice(
             thread = await sent_message.create_thread(name="Maw Voice Session")
             session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto, exclusive=transcribe_only)
             maw_voice_channels.append(session)
+            # This thread must occur first otherwise whisper freaks out (I think?)
+            speech_thread = threading.Thread(target=load_speech)
+            speech_thread.start()
+            #speech_thread.join()
             threading.Thread(target=load_whisper).start()
             global whisperusers
             whisperusers += 1

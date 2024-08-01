@@ -17,6 +17,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from munch import Munch
 from nltk import word_tokenize
+from scipy.signal import get_window
 from torch import nn, Tensor
 from torch.nn import Conv1d, ConvTranspose1d, LayerNorm, Conv2d
 from torch.nn.utils import spectral_norm, weight_norm, remove_weight_norm
@@ -27,10 +28,12 @@ import torch.nn.functional as F
 
 T = TypeVar("T")
 
+
 # Almost all of this comes from https://github.com/yl4579/StyleTTS2
 
 def exists(val: Optional[T]) -> TypeGuard[T]:
     return val is not None
+
 
 # IPA Phonemizer: https://github.com/bootphon/phonemizer
 
@@ -46,10 +49,12 @@ dicts = {}
 for i in range(len((symbols))):
     dicts[symbols[i]] = i
 
+
 class TextCleaner:
     def __init__(self, dummy=None):
         self.word_index_dictionary = dicts
         print(len(dicts))
+
     def __call__(self, text):
         indexes = []
         for char in text:
@@ -59,43 +64,44 @@ class TextCleaner:
                 print(text)
         return indexes
 
-class Diffusion(nn.Module):
 
+class Diffusion(nn.Module):
     alias: str = ""
 
     """Base diffusion class"""
 
     def denoise_fn(
-        self,
-        x_noisy: Tensor,
-        sigmas: Optional[Tensor] = None,
-        sigma: Optional[float] = None,
-        **kwargs,
+            self,
+            x_noisy: Tensor,
+            sigmas: Optional[Tensor] = None,
+            sigma: Optional[float] = None,
+            **kwargs,
     ) -> Tensor:
         raise NotImplementedError("Diffusion class missing denoise_fn")
 
     def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
         raise NotImplementedError("Diffusion class missing forward function")
 
-class Sampler(nn.Module):
 
+class Sampler(nn.Module):
     diffusion_types: List[Type[Diffusion]] = []
 
     def forward(
-        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+            self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
     ) -> Tensor:
         raise NotImplementedError()
 
     def inpaint(
-        self,
-        source: Tensor,
-        mask: Tensor,
-        fn: Callable,
-        sigmas: Tensor,
-        num_steps: int,
-        num_resamples: int,
+            self,
+            source: Tensor,
+            mask: Tensor,
+            fn: Callable,
+            sigmas: Tensor,
+            num_steps: int,
+            num_resamples: int,
     ) -> Tensor:
         raise NotImplementedError("Inpainting not available with current sampler")
+
 
 class Schedule(nn.Module):
     """Interface used by different sampling schedules"""
@@ -109,15 +115,16 @@ class LinearSchedule(Schedule):
         sigmas = torch.linspace(1, 0, num_steps + 1)[:-1]
         return sigmas
 
+
 class DiffusionSampler(nn.Module):
     def __init__(
-        self,
-        diffusion: Diffusion,
-        *,
-        sampler: Sampler,
-        sigma_schedule: Schedule,
-        num_steps: Optional[int] = None,
-        clamp: bool = True,
+            self,
+            diffusion: Diffusion,
+            *,
+            sampler: Sampler,
+            sigma_schedule: Schedule,
+            num_steps: Optional[int] = None,
+            clamp: bool = True,
     ):
         super().__init__()
         self.denoise_fn = diffusion.denoise_fn
@@ -133,7 +140,7 @@ class DiffusionSampler(nn.Module):
         assert diffusion.alias in [t.alias for t in sampler.diffusion_types], message
 
     def forward(
-        self, noise: Tensor, num_steps: Optional[int] = None, **kwargs
+            self, noise: Tensor, num_steps: Optional[int] = None, **kwargs
     ) -> Tensor:
         device = noise.device
         num_steps = default(num_steps, self.num_steps)  # type: ignore
@@ -146,6 +153,7 @@ class DiffusionSampler(nn.Module):
         x = self.sampler(noise, fn=fn, sigmas=sigmas, num_steps=num_steps)
         x = x.clamp(-1.0, 1.0) if self.clamp else x
         return x
+
 
 class LinearNorm(torch.nn.Module):
     def __init__(self, in_dim, out_dim, bias=True, w_init_gain='linear'):
@@ -165,7 +173,7 @@ class ConvNorm(torch.nn.Module):
                  padding=None, dilation=1, bias=True, w_init_gain='linear', param=None):
         super(ConvNorm, self).__init__()
         if padding is None:
-            assert(kernel_size % 2 == 1)
+            assert (kernel_size % 2 == 1)
             padding = int(dilation * (kernel_size - 1) / 2)
 
         self.conv = torch.nn.Conv1d(in_channels, out_channels,
@@ -180,13 +188,14 @@ class ConvNorm(torch.nn.Module):
         conv_signal = self.conv(signal)
         return conv_signal
 
+
 def _get_activation_fn(activ):
     if activ == 'relu':
         return nn.ReLU()
     elif activ == 'lrelu':
         return nn.LeakyReLU(0.2)
     elif activ == 'swish':
-        return lambda x: x*torch.sigmoid(x)
+        return lambda x: x * torch.sigmoid(x)
     else:
         raise RuntimeError('Unexpected activ type %s, expected [relu, lrelu, swish]' % activ)
 
@@ -196,9 +205,8 @@ class ConvBlock(nn.Module):
         super().__init__()
         self._n_groups = 8
         self.blocks = nn.ModuleList([
-            self._get_conv(hidden_dim, dilation=3**i, activ=activ, dropout_p=dropout_p)
+            self._get_conv(hidden_dim, dilation=3 ** i, activ=activ, dropout_p=dropout_p)
             for i in range(n_conv)])
-
 
     def forward(self, x):
         for block in self.blocks:
@@ -218,6 +226,7 @@ class ConvBlock(nn.Module):
             nn.Dropout(p=dropout_p)
         ]
         return nn.Sequential(*layers)
+
 
 class MFCC(nn.Module):
     def __init__(self, n_mfcc=40, n_mels=80):
@@ -264,9 +273,58 @@ class LocationLayer(nn.Module):
 
 
 class Attention(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        *,
+        head_features: int,
+        num_heads: int,
+        out_features: Optional[int] = None,
+        context_features: Optional[int] = None,
+        use_rel_pos: bool,
+        rel_pos_num_buckets: Optional[int] = None,
+        rel_pos_max_distance: Optional[int] = None,
+    ):
+        super().__init__()
+        self.context_features = context_features
+        mid_features = head_features * num_heads
+        context_features = default(context_features, features)
+
+        self.norm = nn.LayerNorm(features)
+        self.norm_context = nn.LayerNorm(context_features)
+        self.to_q = nn.Linear(
+            in_features=features, out_features=mid_features, bias=False
+        )
+        self.to_kv = nn.Linear(
+            in_features=context_features, out_features=mid_features * 2, bias=False
+        )
+
+        self.attention = AttentionBase(
+            features,
+            out_features=out_features,
+            num_heads=num_heads,
+            head_features=head_features,
+            use_rel_pos=use_rel_pos,
+            rel_pos_num_buckets=rel_pos_num_buckets,
+            rel_pos_max_distance=rel_pos_max_distance,
+        )
+
+    def forward(self, x: Tensor, *, context: Optional[Tensor] = None) -> Tensor:
+        assert_message = "You must provide a context when using context_features"
+        assert not self.context_features or exists(context), assert_message
+        # Use context if provided
+        context = default(context, x)
+        # Normalize then compute q from input and k,v from context
+        x, context = self.norm(x), self.norm_context(context)
+        q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(context), chunks=2, dim=-1))
+        # Compute and return attention
+        return self.attention(q, k, v)
+
+
+class ASRAttention(nn.Module):
     def __init__(self, attention_rnn_dim, embedding_dim, attention_dim,
                  attention_location_n_filters, attention_location_kernel_size):
-        super(Attention, self).__init__()
+        super(ASRAttention, self).__init__()
         self.query_layer = LinearNorm(attention_rnn_dim, attention_dim,
                                       bias=False, w_init_gain='tanh')
         self.memory_layer = LinearNorm(embedding_dim, attention_dim, bias=False,
@@ -336,7 +394,7 @@ class ASRS2S(nn.Module):
 
         self.decoder_rnn_dim = hidden_dim
         self.project_to_n_symbols = nn.Linear(self.decoder_rnn_dim, n_token)
-        self.attention_layer = Attention(
+        self.attention_layer = ASRAttention(
             self.decoder_rnn_dim,
             hidden_dim,
             hidden_dim,
@@ -359,12 +417,12 @@ class ASRCNN(nn.Module):
                  n_layers=6,
                  token_embedding_dim=256,
 
-    ):
+                 ):
         super().__init__()
         self.n_token = n_token
         self.n_down = 1
         self.to_mfcc = MFCC()
-        self.init_cnn = ConvNorm(input_dim//2, hidden_dim, kernel_size=7, padding=3, stride=2)
+        self.init_cnn = ConvNorm(input_dim // 2, hidden_dim, kernel_size=7, padding=3, stride=2)
         self.cnns = nn.Sequential(
             *[nn.Sequential(
                 ConvBlock(hidden_dim),
@@ -372,12 +430,12 @@ class ASRCNN(nn.Module):
             ) for n in range(n_layers)])
         self.projection = ConvNorm(hidden_dim, hidden_dim // 2)
         self.ctc_linear = nn.Sequential(
-            LinearNorm(hidden_dim//2, hidden_dim),
+            LinearNorm(hidden_dim // 2, hidden_dim),
             nn.ReLU(),
             LinearNorm(hidden_dim, n_token))
         self.asr_s2s = ASRS2S(
             embedding_dim=token_embedding_dim,
-            hidden_dim=hidden_dim//2,
+            hidden_dim=hidden_dim // 2,
             n_token=n_token)
 
     def forward(self, x, src_key_padding_mask=None, text_input=None):
@@ -402,7 +460,7 @@ class ASRCNN(nn.Module):
 
     def length_to_mask(self, lengths):
         mask = torch.arange(lengths.max()).unsqueeze(0).expand(lengths.shape[0], -1).type_as(lengths)
-        mask = torch.gt(mask+1, lengths.unsqueeze(1)).to(lengths.device)
+        mask = torch.gt(mask + 1, lengths.unsqueeze(1)).to(lengths.device)
         return mask
 
     def get_future_mask(self, out_length, unmask_future_steps=0):
@@ -416,6 +474,7 @@ class ASRCNN(nn.Module):
         index_tensor = torch.arange(out_length).unsqueeze(0).expand(out_length, -1)
         mask = torch.gt(index_tensor, index_tensor.T + unmask_future_steps)
         return mask
+
 
 def load_ASR_models(ASR_MODEL_PATH, ASR_MODEL_CONFIG):
     # load ASR model
@@ -471,6 +530,7 @@ class ResBlock(nn.Module):
         else:
             x = self.conv(x) + x
         return x
+
 
 class JDCNet(nn.Module):
     """
@@ -619,6 +679,7 @@ class JDCNet(nn.Module):
                 else:
                     nn.init.normal_(p.data)
 
+
 def load_F0_models(path):
     # load F0 model
 
@@ -637,6 +698,7 @@ class CustomAlbert(AlbertModel):
 
         # Only return the last_hidden_state
         return outputs.last_hidden_state
+
 
 def load_plbert(log_dir):
     config_path = os.path.join(log_dir, "config.yml")
@@ -684,13 +746,14 @@ class AdaIN1d(nn.Module):
     def __init__(self, style_dim, num_features):
         super().__init__()
         self.norm = nn.InstanceNorm1d(num_features, affine=False)
-        self.fc = nn.Linear(style_dim, num_features*2)
+        self.fc = nn.Linear(style_dim, num_features * 2)
 
     def forward(self, x, s):
         h = self.fc(s)
         h = h.view(h.size(0), h.size(1), 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)
         return (1 + gamma) * self.norm(x) + beta
+
 
 class AdainResBlk1d(nn.Module):
     def __init__(self, dim_in, dim_out, style_dim=64, actv=nn.LeakyReLU(0.2),
@@ -746,7 +809,7 @@ def init_weights(m, mean=0.0, std=0.01):
 
 
 def get_padding(kernel_size, dilation=1):
-    return int((kernel_size*dilation - dilation)/2)
+    return int((kernel_size * dilation - dilation) / 2)
 
 
 class AdaINResBlock1(torch.nn.Module):
@@ -912,6 +975,38 @@ class SineGen(torch.nn.Module):
             sines = torch.cos(i_phase * 2 * np.pi)
         return sines
 
+    def forward(self, f0):
+        """ sine_tensor, uv = forward(f0)
+        input F0: tensor(batchsize=1, length, dim=1)
+                  f0 for unvoiced steps should be 0
+        output sine_tensor: tensor(batchsize=1, length, dim)
+        output uv: tensor(batchsize=1, length, 1)
+        """
+        f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim,
+                             device=f0.device)
+        # fundamental component
+        fn = torch.multiply(f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device))
+
+        # generate sine waveforms
+        sine_waves = self._f02sine(fn) * self.sine_amp
+
+        # generate uv signal
+        # uv = torch.ones(f0.shape)
+        # uv = uv * (f0 > self.voiced_threshold)
+        uv = self._f02uv(f0)
+
+        # noise: for unvoiced should be similar to sine_amp
+        #        std = self.sine_amp/3 -> max value ~ self.sine_amp
+        # .       for voiced regions is self.noise_std
+        noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
+        noise = noise_amp * torch.randn_like(sine_waves)
+
+        # first: set the unvoiced part to 0 by uv
+        # then: additive noise
+        sine_waves = sine_waves * uv + noise
+        return sine_waves, uv, noise
+
+
 class SourceModuleHnNSF(torch.nn.Module):
     """ SourceModule for hn-nsf
     SourceModule(sampling_rate, harmonic_num=0, sine_amp=0.1,
@@ -962,71 +1057,102 @@ class SourceModuleHnNSF(torch.nn.Module):
         return sine_merge, noise, uv
 
 
+class TorchSTFT(torch.nn.Module):
+    def __init__(self, filter_length=800, hop_length=200, win_length=800, window='hann'):
+        super().__init__()
+        self.filter_length = filter_length
+        self.hop_length = hop_length
+        self.win_length = win_length
+        self.window = torch.from_numpy(get_window(window, win_length, fftbins=True).astype(np.float32))
+
+    def transform(self, input_data):
+        forward_transform = torch.stft(
+            input_data,
+            self.filter_length, self.hop_length, self.win_length, window=self.window.to(input_data.device),
+            return_complex=True)
+
+        return torch.abs(forward_transform), torch.angle(forward_transform)
+
+    def inverse(self, magnitude, phase):
+        inverse_transform = torch.istft(
+            magnitude * torch.exp(phase * 1j),
+            self.filter_length, self.hop_length, self.win_length, window=self.window.to(magnitude.device))
+
+        return inverse_transform.unsqueeze(-2)  # unsqueeze to stay consistent with conv_transpose1d implementation
+
+    def forward(self, input_data):
+        self.magnitude, self.phase = self.transform(input_data)
+        reconstruction = self.inverse(self.magnitude, self.phase)
+        return reconstruction
+
+
 class Generator(torch.nn.Module):
     def __init__(self, style_dim, resblock_kernel_sizes, upsample_rates, upsample_initial_channel,
-                 resblock_dilation_sizes, upsample_kernel_sizes):
+                 resblock_dilation_sizes, upsample_kernel_sizes, gen_istft_n_fft, gen_istft_hop_size):
         super(Generator, self).__init__()
+
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
         resblock = AdaINResBlock1
 
         self.m_source = SourceModuleHnNSF(
             sampling_rate=24000,
-            upsample_scale=np.prod(upsample_rates),
+            upsample_scale=np.prod(upsample_rates) * gen_istft_hop_size,
             harmonic_num=8, voiced_threshod=10)
-
-        self.f0_upsamp = torch.nn.Upsample(scale_factor=np.prod(upsample_rates))
+        self.f0_upsamp = torch.nn.Upsample(scale_factor=np.prod(upsample_rates) * gen_istft_hop_size)
         self.noise_convs = nn.ModuleList()
-        self.ups = nn.ModuleList()
         self.noise_res = nn.ModuleList()
 
+        self.ups = nn.ModuleList()
         for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
-            c_cur = upsample_initial_channel // (2 ** (i + 1))
+            self.ups.append(weight_norm(
+                ConvTranspose1d(upsample_initial_channel // (2 ** i), upsample_initial_channel // (2 ** (i + 1)),
+                                k, u, padding=(k - u) // 2)))
 
-            self.ups.append(weight_norm(ConvTranspose1d(upsample_initial_channel // (2 ** i),
-                                                        upsample_initial_channel // (2 ** (i + 1)),
-                                                        k, u, padding=(u // 2 + u % 2), output_padding=u % 2)))
+        self.resblocks = nn.ModuleList()
+        for i in range(len(self.ups)):
+            ch = upsample_initial_channel // (2 ** (i + 1))
+            for j, (k, d) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
+                self.resblocks.append(resblock(ch, k, d, style_dim))
+
+            c_cur = upsample_initial_channel // (2 ** (i + 1))
 
             if i + 1 < len(upsample_rates):  #
                 stride_f0 = np.prod(upsample_rates[i + 1:])
                 self.noise_convs.append(Conv1d(
-                    1, c_cur, kernel_size=stride_f0 * 2, stride=stride_f0, padding=(stride_f0 + 1) // 2))
+                    gen_istft_n_fft + 2, c_cur, kernel_size=stride_f0 * 2, stride=stride_f0,
+                    padding=(stride_f0 + 1) // 2))
                 self.noise_res.append(resblock(c_cur, 7, [1, 3, 5], style_dim))
             else:
-                self.noise_convs.append(Conv1d(1, c_cur, kernel_size=1))
+                self.noise_convs.append(Conv1d(gen_istft_n_fft + 2, c_cur, kernel_size=1))
                 self.noise_res.append(resblock(c_cur, 11, [1, 3, 5], style_dim))
 
-        self.resblocks = nn.ModuleList()
-
-        self.alphas = nn.ParameterList()
-        self.alphas.append(nn.Parameter(torch.ones(1, upsample_initial_channel, 1)))
-
-        for i in range(len(self.ups)):
-            ch = upsample_initial_channel // (2 ** (i + 1))
-            self.alphas.append(nn.Parameter(torch.ones(1, ch, 1)))
-
-            for j, (k, d) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
-                self.resblocks.append(resblock(ch, k, d, style_dim))
-
-        self.conv_post = weight_norm(Conv1d(ch, 1, 7, 1, padding=3))
+        self.post_n_fft = gen_istft_n_fft
+        self.conv_post = weight_norm(Conv1d(ch, self.post_n_fft + 2, 7, 1, padding=3))
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
+        self.reflection_pad = torch.nn.ReflectionPad1d((1, 0))
+        self.stft = TorchSTFT(filter_length=gen_istft_n_fft, hop_length=gen_istft_hop_size, win_length=gen_istft_n_fft)
 
     def forward(self, x, s, f0):
+        with torch.no_grad():
+            f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,n,t
 
-        f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,n,t
-
-        har_source, noi_source, uv = self.m_source(f0)
-        har_source = har_source.transpose(1, 2)
+            har_source, noi_source, uv = self.m_source(f0)
+            har_source = har_source.transpose(1, 2).squeeze(1)
+            har_spec, har_phase = self.stft.transform(har_source)
+            har = torch.cat([har_spec, har_phase], dim=1)
 
         for i in range(self.num_upsamples):
-            x = x + (1 / self.alphas[i]) * (torch.sin(self.alphas[i] * x) ** 2)
-            x_source = self.noise_convs[i](har_source)
+            x = F.leaky_relu(x, 0.1)
+            x_source = self.noise_convs[i](har)
             x_source = self.noise_res[i](x_source, s)
 
             x = self.ups[i](x)
-            x = x + x_source
+            if i == self.num_upsamples - 1:
+                x = self.reflection_pad(x)
 
+            x = x + x_source
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
@@ -1034,11 +1160,29 @@ class Generator(torch.nn.Module):
                 else:
                     xs += self.resblocks[i * self.num_kernels + j](x, s)
             x = xs / self.num_kernels
-        x = x + (1 / self.alphas[i + 1]) * (torch.sin(self.alphas[i + 1] * x) ** 2)
+        x = F.leaky_relu(x)
         x = self.conv_post(x)
-        x = torch.tanh(x)
+        spec = torch.exp(x[:, :self.post_n_fft // 2 + 1, :])
+        phase = torch.sin(x[:, self.post_n_fft // 2 + 1:, :])
+        return self.stft.inverse(spec, phase)
 
-        return x
+    def fw_phase(self, x, s):
+        for i in range(self.num_upsamples):
+            x = F.leaky_relu(x, 0.1)
+            x = self.ups[i](x)
+            xs = None
+            for j in range(self.num_kernels):
+                if xs is None:
+                    xs = self.resblocks[i * self.num_kernels + j](x, s)
+                else:
+                    xs += self.resblocks[i * self.num_kernels + j](x, s)
+            x = xs / self.num_kernels
+        x = F.leaky_relu(x)
+        x = self.reflection_pad(x)
+        x = self.conv_post(x)
+        spec = torch.exp(x[:, :self.post_n_fft // 2 + 1, :])
+        phase = torch.sin(x[:, self.post_n_fft // 2 + 1:, :])
+        return spec, phase
 
     def remove_weight_norm(self):
         print('Removing weight norm...')
@@ -1253,6 +1397,7 @@ class DurationEncoder(nn.Module):
 
         return x.transpose(-1, -2)
 
+
 class ProsodyPredictor(nn.Module):
 
     def __init__(self, style_dim, d_hid, nlayers, max_dur=50, dropout=0.1):
@@ -1330,7 +1475,6 @@ class ProsodyPredictor(nn.Module):
         return mask
 
 
-
 class DownSample(nn.Module):
     def __init__(self, layer_type):
         super().__init__()
@@ -1346,7 +1490,8 @@ class DownSample(nn.Module):
                 x = torch.cat([x, x[..., -1].unsqueeze(-1)], dim=-1)
             return F.avg_pool2d(x, 2)
         else:
-            raise RuntimeError('Got unexpected donwsampletype %s, expected is [none, timepreserve, half]' % self.layer_type)
+            raise RuntimeError(
+                'Got unexpected donwsampletype %s, expected is [none, timepreserve, half]' % self.layer_type)
 
 
 class LearnedDownSample(nn.Module):
@@ -1414,7 +1559,6 @@ class ResBlk(nn.Module):
         return x / math.sqrt(2)  # unit variance
 
 
-
 class StyleEncoder(nn.Module):
     def __init__(self, dim_in=48, style_dim=48, max_conv_dim=384):
         super().__init__()
@@ -1434,7 +1578,6 @@ class StyleEncoder(nn.Module):
         self.shared = nn.Sequential(*blocks)
 
         self.unshared = nn.Linear(dim_out, style_dim)
-
 
     def forward(self, x):
         h = self.shared(x)
@@ -1463,7 +1606,7 @@ class DiscriminatorP(torch.nn.Module):
 
         # 1d to 2d
         b, c, t = x.shape
-        if t % self.period != 0: # pad first
+        if t % self.period != 0:  # pad first
             n_pad = self.period - (t % self.period)
             x = F.pad(x, (0, n_pad), "reflect")
             t = t + n_pad
@@ -1507,21 +1650,22 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
-
 def default(val: Optional[T], d: Union[Callable[..., T], T]) -> T:
     if exists(val):
         return val
     return d() if isfunction(d) else d
 
+
 class Distribution:
     def __call__(self, num_samples: int, device: torch.device):
         raise NotImplementedError()
 
+
 def to_batch(
-    batch_size: int,
-    device: torch.device,
-    x: Optional[float] = None,
-    xs: Optional[Tensor] = None,
+        batch_size: int,
+        device: torch.device,
+        x: Optional[float] = None,
+        xs: Optional[Tensor] = None,
 ) -> Tensor:
     assert exists(x) ^ exists(xs), "Either x or xs must be provided"
     # If x provided use the same for all batch items
@@ -1529,6 +1673,7 @@ def to_batch(
         xs = torch.full(size=(batch_size,), fill_value=x).to(device)
     assert exists(xs)
     return xs
+
 
 class KDiffusion(Diffusion):
     """Elucidated Diffusion (Karras et al. 2022): https://arxiv.org/abs/2206.00364"""
@@ -1612,7 +1757,7 @@ class RelativePositionBias(nn.Module):
 
     @staticmethod
     def _relative_position_bucket(
-        relative_position: Tensor, num_buckets: int, max_distance: int
+            relative_position: Tensor, num_buckets: int, max_distance: int
     ):
         num_buckets //= 2
         ret = (relative_position >= 0).to(torch.long) * num_buckets
@@ -1622,12 +1767,12 @@ class RelativePositionBias(nn.Module):
         is_small = n < max_exact
 
         val_if_large = (
-            max_exact
-            + (
-                torch.log(n.float() / max_exact)
-                / math.log(max_distance / max_exact)
-                * (num_buckets - max_exact)
-            ).long()
+                max_exact
+                + (
+                        torch.log(n.float() / max_exact)
+                        / math.log(max_distance / max_exact)
+                        * (num_buckets - max_exact)
+                ).long()
         )
         val_if_large = torch.min(
             val_if_large, torch.full_like(val_if_large, num_buckets - 1)
@@ -1730,7 +1875,6 @@ class StyleAttention(nn.Module):
         return self.attention(q, k, v)
 
 
-
 def FeedForward(features: int, multiplier: int) -> nn.Module:
     mid_features = features * multiplier
     return nn.Sequential(
@@ -1742,16 +1886,16 @@ def FeedForward(features: int, multiplier: int) -> nn.Module:
 
 class StyleTransformerBlock(nn.Module):
     def __init__(
-        self,
-        features: int,
-        num_heads: int,
-        head_features: int,
-        style_dim: int,
-        multiplier: int,
-        use_rel_pos: bool,
-        rel_pos_num_buckets: Optional[int] = None,
-        rel_pos_max_distance: Optional[int] = None,
-        context_features: Optional[int] = None,
+            self,
+            features: int,
+            num_heads: int,
+            head_features: int,
+            style_dim: int,
+            multiplier: int,
+            use_rel_pos: bool,
+            rel_pos_num_buckets: Optional[int] = None,
+            rel_pos_max_distance: Optional[int] = None,
+            context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -1805,6 +1949,7 @@ class LearnedPositionalEmbedding(nn.Module):
         fouriered = torch.cat((x, fouriered), dim=-1)
         return fouriered
 
+
 def TimePositionalEmbedding(dim: int, out_features: int) -> nn.Module:
     return nn.Sequential(
         LearnedPositionalEmbedding(dim),
@@ -1828,8 +1973,7 @@ class FixedEmbedding(nn.Module):
         return fixed_embedding
 
 
-
-def rand_bool(shape, proba, device = None):
+def rand_bool(shape, proba, device=None):
     if proba == 1:
         return torch.ones(shape, device=device, dtype=torch.bool)
     elif proba == 0:
@@ -1987,15 +2131,15 @@ class StyleTransformer1d(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(
-        self,
-        features: int,
-        num_heads: int,
-        head_features: int,
-        multiplier: int,
-        use_rel_pos: bool,
-        rel_pos_num_buckets: Optional[int] = None,
-        rel_pos_max_distance: Optional[int] = None,
-        context_features: Optional[int] = None,
+            self,
+            features: int,
+            num_heads: int,
+            head_features: int,
+            multiplier: int,
+            use_rel_pos: bool,
+            rel_pos_num_buckets: Optional[int] = None,
+            rel_pos_max_distance: Optional[int] = None,
+            context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -2189,12 +2333,11 @@ def stft(x, fft_size, hop_size, win_length, window):
         Tensor: Magnitude spectrogram (B, #frames, fft_size // 2 + 1).
     """
     x_stft = torch.stft(x, fft_size, hop_size, win_length, window,
-            return_complex=True)
+                        return_complex=True)
     real = x_stft[..., 0]
     imag = x_stft[..., 1]
 
     return torch.abs(x_stft).transpose(2, 1)
-
 
 
 class SpecDiscriminator(nn.Module):
@@ -2209,16 +2352,15 @@ class SpecDiscriminator(nn.Module):
         self.window = getattr(torch, window)(win_length)
         self.discriminators = nn.ModuleList([
             norm_f(nn.Conv2d(1, 32, kernel_size=(3, 9), padding=(1, 4))),
-            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 9), stride=(1,2), padding=(1, 4))),
-            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 9), stride=(1,2), padding=(1, 4))),
-            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 9), stride=(1,2), padding=(1, 4))),
-            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 3), stride=(1,1), padding=(1, 1))),
+            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 9), stride=(1, 2), padding=(1, 4))),
+            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 9), stride=(1, 2), padding=(1, 4))),
+            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 9), stride=(1, 2), padding=(1, 4))),
+            norm_f(nn.Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))),
         ])
 
         self.out = norm_f(nn.Conv2d(32, 1, 3, 1, 1))
 
     def forward(self, y):
-
         fmap = []
         y = y.squeeze(1)
         y = stft(y, self.fft_size, self.shift_size, self.win_length, self.window.to(y.get_device()))
@@ -2241,13 +2383,12 @@ class MultiResSpecDiscriminator(torch.nn.Module):
                  hop_sizes=[120, 240, 50],
                  win_lengths=[600, 1200, 240],
                  window="hann_window"):
-
         super(MultiResSpecDiscriminator, self).__init__()
         self.discriminators = nn.ModuleList([
             SpecDiscriminator(fft_sizes[0], hop_sizes[0], win_lengths[0], window),
             SpecDiscriminator(fft_sizes[1], hop_sizes[1], win_lengths[1], window),
             SpecDiscriminator(fft_sizes[2], hop_sizes[2], win_lengths[2], window)
-            ])
+        ])
 
     def forward(self, y, y_hat):
         y_d_rs = []
@@ -2272,11 +2413,12 @@ def group_dict_by_prefix(prefix: str, d: Dict) -> Tuple[Dict, Dict]:
         return_dicts[no_prefix][key] = d[key]
     return return_dicts
 
+
 def groupby(prefix: str, d: Dict, keep_prefix: bool = False) -> Tuple[Dict, Dict]:
     kwargs_with_prefix, kwargs = group_dict_by_prefix(prefix, d)
     if keep_prefix:
         return kwargs_with_prefix, kwargs
-    kwargs_no_prefix = {k[len(prefix) :]: v for k, v in kwargs_with_prefix.items()}
+    kwargs_no_prefix = {k[len(prefix):]: v for k, v in kwargs_with_prefix.items()}
     return kwargs_no_prefix, kwargs
 
 
@@ -2293,9 +2435,11 @@ class Model1d(nn.Module):
     def sample(self, *args, **kwargs) -> Tensor:
         return self.diffusion.sample(*args, **kwargs)
 
+
 class UniformDistribution(Distribution):
     def __call__(self, num_samples: int, device: torch.device = torch.device("cpu")):
         return torch.rand(num_samples, device=device)
+
 
 def get_default_model_kwargs():
     return dict(
@@ -2315,7 +2459,6 @@ def get_default_model_kwargs():
 
 
 class VDiffusion(Diffusion):
-
     alias = "v"
 
     def __init__(self, net: nn.Module, *, sigma_distribution: Distribution):
@@ -2330,11 +2473,11 @@ class VDiffusion(Diffusion):
         return alpha, beta
 
     def denoise_fn(
-        self,
-        x_noisy: Tensor,
-        sigmas: Optional[Tensor] = None,
-        sigma: Optional[float] = None,
-        **kwargs,
+            self,
+            x_noisy: Tensor,
+            sigmas: Optional[Tensor] = None,
+            sigma: Optional[float] = None,
+            **kwargs,
     ) -> Tensor:
         batch_size, device = x_noisy.shape[0], x_noisy.device
         sigmas = to_batch(x=sigma, xs=sigmas, batch_size=batch_size, device=device)
@@ -2361,7 +2504,6 @@ class VDiffusion(Diffusion):
 
 
 class VSampler(Sampler):
-
     diffusion_types = [VDiffusion]
 
     def get_alpha_beta(self, sigma: float) -> Tuple[float, float]:
@@ -2371,7 +2513,7 @@ class VSampler(Sampler):
         return alpha, beta
 
     def forward(
-        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+            self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
     ) -> Tensor:
         x = sigmas[0] * noise
         alpha, beta = self.get_alpha_beta(sigmas[0].item())
@@ -2396,11 +2538,11 @@ def get_default_sampling_kwargs():
 
 class AudioDiffusionConditional(Model1d):
     def __init__(
-        self,
-        embedding_features: int,
-        embedding_max_length: int,
-        embedding_mask_proba: float = 0.1,
-        **kwargs,
+            self,
+            embedding_features: int,
+            embedding_max_length: int,
+            embedding_mask_proba: float = 0.1,
+            **kwargs,
     ):
         self.embedding_mask_proba = embedding_mask_proba
         default_kwargs = dict(
@@ -2462,11 +2604,10 @@ class LogNormalDistribution(Distribution):
         self.std = std
 
     def __call__(
-        self, num_samples: int, device: torch.device = torch.device("cpu")
+            self, num_samples: int, device: torch.device = torch.device("cpu")
     ) -> Tensor:
         normal = self.mean + self.std * torch.randn((num_samples,), device=device)
         return normal.exp()
-
 
 
 def build_model(args, text_aligner, pitch_extractor, bert):
@@ -2553,6 +2694,7 @@ def build_model(args, text_aligner, pitch_extractor, bert):
 
     return nets
 
+
 def recursive_munch(d):
     if isinstance(d, dict):
         return Munch((k, recursive_munch(v)) for k, v in d.items())
@@ -2563,7 +2705,6 @@ def recursive_munch(d):
 
 
 class VKDiffusion(Diffusion):
-
     alias = "vk"
 
     def __init__(self, net: nn.Module, *, sigma_distribution: Distribution):
@@ -2586,11 +2727,11 @@ class VKDiffusion(Diffusion):
         return (t * math.pi / 2).tan()
 
     def denoise_fn(
-        self,
-        x_noisy: Tensor,
-        sigmas: Optional[Tensor] = None,
-        sigma: Optional[float] = None,
-        **kwargs,
+            self,
+            x_noisy: Tensor,
+            sigmas: Optional[Tensor] = None,
+            sigma: Optional[float] = None,
+            **kwargs,
     ) -> Tensor:
         batch_size, device = x_noisy.shape[0], x_noisy.device
         sigmas = to_batch(x=sigma, xs=sigmas, batch_size=batch_size, device=device)
@@ -2656,7 +2797,7 @@ class ADPM2Sampler(Sampler):
         return x_next
 
     def forward(
-        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+            self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
     ) -> Tensor:
         x = sigmas[0] * noise
         # Denoise to sample
@@ -2665,13 +2806,13 @@ class ADPM2Sampler(Sampler):
         return x
 
     def inpaint(
-        self,
-        source: Tensor,
-        mask: Tensor,
-        fn: Callable,
-        sigmas: Tensor,
-        num_steps: int,
-        num_resamples: int,
+            self,
+            source: Tensor,
+            mask: Tensor,
+            fn: Callable,
+            sigmas: Tensor,
+            num_steps: int,
+            num_resamples: int,
     ) -> Tensor:
         x = sigmas[0] * torch.randn_like(source)
 
@@ -2703,10 +2844,10 @@ class KarrasSchedule(Schedule):
         rho_inv = 1.0 / self.rho
         steps = torch.arange(num_steps, device=device, dtype=torch.float32)
         sigmas = (
-            self.sigma_max ** rho_inv
-            + (steps / (num_steps - 1))
-            * (self.sigma_min ** rho_inv - self.sigma_max ** rho_inv)
-        ) ** self.rho
+                         self.sigma_max ** rho_inv
+                         + (steps / (num_steps - 1))
+                         * (self.sigma_min ** rho_inv - self.sigma_max ** rho_inv)
+                 ) ** self.rho
         sigmas = F.pad(sigmas, pad=(0, 1), value=0.0)
         return sigmas
 
@@ -2716,7 +2857,8 @@ def length_to_mask(lengths):
     mask = torch.gt(mask + 1, lengths.unsqueeze(1))
     return mask
 
-class SpeakerRunner():
+
+class SpeakerRunner:
     def __init__(self):
         device = "cuda"
         self.device = "cuda"
@@ -2737,8 +2879,8 @@ class SpeakerRunner():
             return mel_tensor
 
         self.global_phonemizer = phonemizer.backend.EspeakBackend(language='en-us', preserve_punctuation=True,
-                                                             with_stress=True,
-                                                             words_mismatch='ignore')
+                                                                  with_stress=True,
+                                                                  words_mismatch='ignore')
         config = yaml.safe_load(open("Models/LJSpeech/config.yml"))
         ASR_config = config.get('ASR_config', False)
         ASR_path = config.get('ASR_path', False)
@@ -2797,8 +2939,8 @@ class SpeakerRunner():
             d_en = self.model.bert_encoder(bert_dur).transpose(-1, -2)
 
             s_pred = self.sampler(noise,
-                             embedding=bert_dur[0].unsqueeze(0), num_steps=diffusion_steps,
-                             embedding_scale=embedding_scale).squeeze(0)
+                                  embedding=bert_dur[0].unsqueeze(0), num_steps=diffusion_steps,
+                                  embedding_scale=embedding_scale).squeeze(0)
 
             s = s_pred[:, 128:]
             ref = s_pred[:, :128]
@@ -2822,159 +2964,30 @@ class SpeakerRunner():
             en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(self.device))
             F0_pred, N_pred = self.model.predictor.F0Ntrain(en, s)
             out = self.model.decoder((t_en @ pred_aln_trg.unsqueeze(0).to(self.device)),
-                                F0_pred, N_pred, ref.squeeze().unsqueeze(0))
+                                     F0_pred, N_pred, ref.squeeze().unsqueeze(0))
 
         return out.squeeze().cpu().numpy()
 
-def speaker_runner():
-    """
-    For running StyleTTS2. Basically all of this is borrowed from the LJSpeech notebook.
-    """
-    device = "cuda"
-    torch.manual_seed(0)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    random.seed(0)
-    np.random.seed(0)
-    nltk.download('punkt')
-    text_cleaner = TextCleaner()
-    to_mel = torchaudio.transforms.MelSpectrogram(n_mels=80, n_fft=2048, win_length=1200, hop_length=300)
-    mean, std = -4, 4
-
-    def length_to_mask(lengths):
-        mask = torch.arange(lengths.max()).unsqueeze(0).expand(lengths.shape[0], -1).type_as(lengths)
-        mask = torch.gt(mask + 1, lengths.unsqueeze(1))
-        return mask
-
-    def preprocess(wave):
-        wave_tensor = torch.from_numpy(wave).float()
-        mel_tensor = to_mel(wave_tensor)
-        mel_tensor = (torch.log(1e-5 + mel_tensor.unsqueeze(0)) - mean) / std
-        return mel_tensor
-
-    def compute_style(ref_dicts):
-        reference_embeddings = {}
-        for key, path in ref_dicts.items():
-            wave, sr = librosa.load(path, sr=24000)
-            audio, index = librosa.effects.trim(wave, top_db=30)
-            if sr != 24000:
-                audio = librosa.resample(audio, sr, 24000)
-            mel_tensor = preprocess(audio).to(device)
-
-            with torch.no_grad():
-                ref = model.style_encoder(mel_tensor.unsqueeze(1))
-            reference_embeddings[key] = (ref.squeeze(1), audio)
-
-        return reference_embeddings
-
-    global_phonemizer = phonemizer.backend.EspeakBackend(language='en-us', preserve_punctuation=True, with_stress=True,
-                                                         words_mismatch='ignore')
-    config = yaml.safe_load(open("Models/LJSpeech/config.yml"))
-    ASR_config = config.get('ASR_config', False)
-    ASR_path = config.get('ASR_path', False)
-    text_aligner = load_ASR_models(ASR_path, ASR_config)
-    F0_path = config.get('F0_path', False)
-    pitch_extractor = load_F0_models(F0_path)
-    BERT_path = config.get('PLBERT_dir', False)
-    plbert = load_plbert(BERT_path)
-    model = build_model(recursive_munch(config['model_params']), text_aligner, pitch_extractor, plbert)
-    _ = [model[key].eval() for key in model]
-    _ = [model[key].to(device) for key in model]
-    params_whole = torch.load("Models/LJSpeech/epoch_2nd_00100.pth", map_location='cpu')
-    params = params_whole['net']
-    for key in model:
-        if key in params:
-            try:
-                model[key].load_state_dict(params[key])
-            except:
-                from collections import OrderedDict
-                state_dict = params[key]
-                new_state_dict = OrderedDict()
-                for k, v in state_dict.items():
-                    name = k[7:]  # remove `module.`
-                    new_state_dict[name] = v
-                # load params
-                model[key].load_state_dict(new_state_dict, strict=False)
-    #             except:
-    #                 _load(params[key], model[key])
-    _ = [model[key].eval() for key in model]
-
-    sampler = DiffusionSampler(
-        model.diffusion.diffusion,
-        sampler=ADPM2Sampler(),
-        sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),  # empirical parameters
-        clamp=False
-    )
-
-    def inference(text, noise, diffusion_steps=5, embedding_scale=1):
+    def LFinference(self, text, s_prev, noise, alpha=0.7, diffusion_steps=5, embedding_scale=1):
         text = text.strip()
         text = text.replace('"', '')
-        ps = global_phonemizer.phonemize([text])
+        ps = self.global_phonemizer.phonemize([text])
         ps = word_tokenize(ps[0])
         ps = ' '.join(ps)
 
-        tokens = text_cleaner(ps)
+        tokens = self.text_cleaner(ps)
         tokens.insert(0, 0)
-        tokens = torch.LongTensor(tokens).to(device).unsqueeze(0)
+        tokens = torch.LongTensor(tokens).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
             input_lengths = torch.LongTensor([tokens.shape[-1]]).to(tokens.device)
             text_mask = length_to_mask(input_lengths).to(tokens.device)
 
-            t_en = model.text_encoder(tokens, input_lengths, text_mask)
-            bert_dur = model.bert(tokens, attention_mask=(~text_mask).int())
-            d_en = model.bert_encoder(bert_dur).transpose(-1, -2)
+            t_en = self.model.text_encoder(tokens, input_lengths, text_mask)
+            bert_dur = self.model.bert(tokens, attention_mask=(~text_mask).int())
+            d_en = self.model.bert_encoder(bert_dur).transpose(-1, -2)
 
-            s_pred = sampler(noise,
-                             embedding=bert_dur[0].unsqueeze(0), num_steps=diffusion_steps,
-                             embedding_scale=embedding_scale).squeeze(0)
-
-            s = s_pred[:, 128:]
-            ref = s_pred[:, :128]
-
-            d = model.predictor.text_encoder(d_en, s, input_lengths, text_mask)
-
-            x, _ = model.predictor.lstm(d)
-            duration = model.predictor.duration_proj(x)
-            duration = torch.sigmoid(duration).sum(axis=-1)
-            pred_dur = torch.round(duration.squeeze()).clamp(min=1)
-
-            pred_dur[-1] += 5
-
-            pred_aln_trg = torch.zeros(input_lengths, int(pred_dur.sum().data))
-            c_frame = 0
-            for i in range(pred_aln_trg.size(0)):
-                pred_aln_trg[i, c_frame:c_frame + int(pred_dur[i].data)] = 1
-                c_frame += int(pred_dur[i].data)
-
-            # encode prosody
-            en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(device))
-            F0_pred, N_pred = model.predictor.F0Ntrain(en, s)
-            out = model.decoder((t_en @ pred_aln_trg.unsqueeze(0).to(device)),
-                                F0_pred, N_pred, ref.squeeze().unsqueeze(0))
-
-        return out.squeeze().cpu().numpy()
-
-    def LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=5, embedding_scale=1):
-        text = text.strip()
-        text = text.replace('"', '')
-        ps = global_phonemizer.phonemize([text])
-        ps = word_tokenize(ps[0])
-        ps = ' '.join(ps)
-
-        tokens = text_cleaner(ps)
-        tokens.insert(0, 0)
-        tokens = torch.LongTensor(tokens).to(device).unsqueeze(0)
-
-        with torch.no_grad():
-            input_lengths = torch.LongTensor([tokens.shape[-1]]).to(tokens.device)
-            text_mask = length_to_mask(input_lengths).to(tokens.device)
-
-            t_en = model.text_encoder(tokens, input_lengths, text_mask)
-            bert_dur = model.bert(tokens, attention_mask=(~text_mask).int())
-            d_en = model.bert_encoder(bert_dur).transpose(-1, -2)
-
-            s_pred = sampler(noise,
+            s_pred = self.sampler(noise,
                              embedding=bert_dur[0].unsqueeze(0), num_steps=diffusion_steps,
                              embedding_scale=embedding_scale).squeeze(0)
 
@@ -2985,10 +2998,10 @@ def speaker_runner():
             s = s_pred[:, 128:]
             ref = s_pred[:, :128]
 
-            d = model.predictor.text_encoder(d_en, s, input_lengths, text_mask)
+            d = self.model.predictor.text_encoder(d_en, s, input_lengths, text_mask)
 
-            x, _ = model.predictor.lstm(d)
-            duration = model.predictor.duration_proj(x)
+            x, _ = self.model.predictor.lstm(d)
+            duration = self.model.predictor.duration_proj(x)
             duration = torch.sigmoid(duration).sum(axis=-1)
             pred_dur = torch.round(duration.squeeze()).clamp(min=1)
 
@@ -2999,31 +3012,211 @@ def speaker_runner():
                 c_frame += int(pred_dur[i].data)
 
             # encode prosody
-            en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(device))
-            F0_pred, N_pred = model.predictor.F0Ntrain(en, s)
-            out = model.decoder((t_en @ pred_aln_trg.unsqueeze(0).to(device)),
+            en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(self.device))
+            F0_pred, N_pred = self.model.predictor.F0Ntrain(en, s)
+            out = self.model.decoder((t_en @ pred_aln_trg.unsqueeze(0).to(self.device)),
                                 F0_pred, N_pred, ref.squeeze().unsqueeze(0))
-
         return out.squeeze().cpu().numpy(), s_pred
 
-    global audio_text_list
-    global model_loaded
-    model_loaded = 1  # Don't load llama until after StyleTTS2, otherwise we run into errors.
-    while True:
-        while audio_text_list == []:
-            time.sleep(0.01)
-        if audio_text_list[0] != "":
-            try:
-                start = time.time()
-                noise = torch.randn(1, 1, 256).to(device)
-                if len(audio_text_list[0].split(" ")) == 0:
-                    emotion = 1.0
-                else:
-                    emotion = (2.0 + (math.log(len(audio_text_list[0].split(" ")) / 100) / 2)) * 1.4
-                wav = inference(audio_text_list[0], noise, diffusion_steps=7, embedding_scale=emotion)
-                # print("(StyleTTS2) Real time factor:", round((len(wav) / 24000) / (time.time() - start), 2))
-                #audio_play_list.append(wav)
-            except Exception as e:
-                print(repr(e))
-                pass
-        audio_text_list.pop(0)
+
+# def speaker_runner():
+#     """
+#     For running StyleTTS2. Basically all of this is borrowed from the LJSpeech notebook.
+#     """
+#     device = "cuda"
+#     torch.manual_seed(0)
+#     torch.backends.cudnn.benchmark = False
+#     torch.backends.cudnn.deterministic = True
+#     random.seed(0)
+#     np.random.seed(0)
+#     nltk.download('punkt')
+#     text_cleaner = TextCleaner()
+#     to_mel = torchaudio.transforms.MelSpectrogram(n_mels=80, n_fft=2048, win_length=1200, hop_length=300)
+#     mean, std = -4, 4
+#
+#     def length_to_mask(lengths):
+#         mask = torch.arange(lengths.max()).unsqueeze(0).expand(lengths.shape[0], -1).type_as(lengths)
+#         mask = torch.gt(mask + 1, lengths.unsqueeze(1))
+#         return mask
+#
+#     def preprocess(wave):
+#         wave_tensor = torch.from_numpy(wave).float()
+#         mel_tensor = to_mel(wave_tensor)
+#         mel_tensor = (torch.log(1e-5 + mel_tensor.unsqueeze(0)) - mean) / std
+#         return mel_tensor
+#
+#     def compute_style(ref_dicts):
+#         reference_embeddings = {}
+#         for key, path in ref_dicts.items():
+#             wave, sr = librosa.load(path, sr=24000)
+#             audio, index = librosa.effects.trim(wave, top_db=30)
+#             if sr != 24000:
+#                 audio = librosa.resample(audio, sr, 24000)
+#             mel_tensor = preprocess(audio).to(device)
+#
+#             with torch.no_grad():
+#                 ref = model.style_encoder(mel_tensor.unsqueeze(1))
+#             reference_embeddings[key] = (ref.squeeze(1), audio)
+#
+#         return reference_embeddings
+#
+#     global_phonemizer = phonemizer.backend.EspeakBackend(language='en-us', preserve_punctuation=True, with_stress=True,
+#                                                          words_mismatch='ignore')
+#     config = yaml.safe_load(open("Models/LJSpeech/config.yml"))
+#     ASR_config = config.get('ASR_config', False)
+#     ASR_path = config.get('ASR_path', False)
+#     text_aligner = load_ASR_models(ASR_path, ASR_config)
+#     F0_path = config.get('F0_path', False)
+#     pitch_extractor = load_F0_models(F0_path)
+#     BERT_path = config.get('PLBERT_dir', False)
+#     plbert = load_plbert(BERT_path)
+#     model = build_model(recursive_munch(config['model_params']), text_aligner, pitch_extractor, plbert)
+#     _ = [model[key].eval() for key in model]
+#     _ = [model[key].to(device) for key in model]
+#     params_whole = torch.load("Models/LJSpeech/epoch_2nd_00100.pth", map_location='cpu')
+#     params = params_whole['net']
+#     for key in model:
+#         if key in params:
+#             try:
+#                 model[key].load_state_dict(params[key])
+#             except:
+#                 from collections import OrderedDict
+#                 state_dict = params[key]
+#                 new_state_dict = OrderedDict()
+#                 for k, v in state_dict.items():
+#                     name = k[7:]  # remove `module.`
+#                     new_state_dict[name] = v
+#                 # load params
+#                 model[key].load_state_dict(new_state_dict, strict=False)
+#     #             except:
+#     #                 _load(params[key], model[key])
+#     _ = [model[key].eval() for key in model]
+#
+#     sampler = DiffusionSampler(
+#         model.diffusion.diffusion,
+#         sampler=ADPM2Sampler(),
+#         sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),  # empirical parameters
+#         clamp=False
+#     )
+#
+#     def inference(text, noise, diffusion_steps=5, embedding_scale=1):
+#         text = text.strip()
+#         text = text.replace('"', '')
+#         ps = global_phonemizer.phonemize([text])
+#         ps = word_tokenize(ps[0])
+#         ps = ' '.join(ps)
+#
+#         tokens = text_cleaner(ps)
+#         tokens.insert(0, 0)
+#         tokens = torch.LongTensor(tokens).to(device).unsqueeze(0)
+#
+#         with torch.no_grad():
+#             input_lengths = torch.LongTensor([tokens.shape[-1]]).to(tokens.device)
+#             text_mask = length_to_mask(input_lengths).to(tokens.device)
+#
+#             t_en = model.text_encoder(tokens, input_lengths, text_mask)
+#             bert_dur = model.bert(tokens, attention_mask=(~text_mask).int())
+#             d_en = model.bert_encoder(bert_dur).transpose(-1, -2)
+#
+#             s_pred = sampler(noise,
+#                              embedding=bert_dur[0].unsqueeze(0), num_steps=diffusion_steps,
+#                              embedding_scale=embedding_scale).squeeze(0)
+#
+#             s = s_pred[:, 128:]
+#             ref = s_pred[:, :128]
+#
+#             d = model.predictor.text_encoder(d_en, s, input_lengths, text_mask)
+#
+#             x, _ = model.predictor.lstm(d)
+#             duration = model.predictor.duration_proj(x)
+#             duration = torch.sigmoid(duration).sum(axis=-1)
+#             pred_dur = torch.round(duration.squeeze()).clamp(min=1)
+#
+#             pred_dur[-1] += 5
+#
+#             pred_aln_trg = torch.zeros(input_lengths, int(pred_dur.sum().data))
+#             c_frame = 0
+#             for i in range(pred_aln_trg.size(0)):
+#                 pred_aln_trg[i, c_frame:c_frame + int(pred_dur[i].data)] = 1
+#                 c_frame += int(pred_dur[i].data)
+#
+#             # encode prosody
+#             en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(device))
+#             F0_pred, N_pred = model.predictor.F0Ntrain(en, s)
+#             out = model.decoder((t_en @ pred_aln_trg.unsqueeze(0).to(device)),
+#                                 F0_pred, N_pred, ref.squeeze().unsqueeze(0))
+#
+#         return out.squeeze().cpu().numpy()
+#
+#     def LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=5, embedding_scale=1):
+#         text = text.strip()
+#         text = text.replace('"', '')
+#         ps = global_phonemizer.phonemize([text])
+#         ps = word_tokenize(ps[0])
+#         ps = ' '.join(ps)
+#
+#         tokens = text_cleaner(ps)
+#         tokens.insert(0, 0)
+#         tokens = torch.LongTensor(tokens).to(device).unsqueeze(0)
+#
+#         with torch.no_grad():
+#             input_lengths = torch.LongTensor([tokens.shape[-1]]).to(tokens.device)
+#             text_mask = length_to_mask(input_lengths).to(tokens.device)
+#
+#             t_en = model.text_encoder(tokens, input_lengths, text_mask)
+#             bert_dur = model.bert(tokens, attention_mask=(~text_mask).int())
+#             d_en = model.bert_encoder(bert_dur).transpose(-1, -2)
+#
+#             s_pred = sampler(noise,
+#                              embedding=bert_dur[0].unsqueeze(0), num_steps=diffusion_steps,
+#                              embedding_scale=embedding_scale).squeeze(0)
+#
+#             if s_prev is not None:
+#                 # convex combination of previous and current style
+#                 s_pred = alpha * s_prev + (1 - alpha) * s_pred
+#
+#             s = s_pred[:, 128:]
+#             ref = s_pred[:, :128]
+#
+#             d = model.predictor.text_encoder(d_en, s, input_lengths, text_mask)
+#
+#             x, _ = model.predictor.lstm(d)
+#             duration = model.predictor.duration_proj(x)
+#             duration = torch.sigmoid(duration).sum(axis=-1)
+#             pred_dur = torch.round(duration.squeeze()).clamp(min=1)
+#
+#             pred_aln_trg = torch.zeros(input_lengths, int(pred_dur.sum().data))
+#             c_frame = 0
+#             for i in range(pred_aln_trg.size(0)):
+#                 pred_aln_trg[i, c_frame:c_frame + int(pred_dur[i].data)] = 1
+#                 c_frame += int(pred_dur[i].data)
+#
+#             # encode prosody
+#             en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(device))
+#             F0_pred, N_pred = model.predictor.F0Ntrain(en, s)
+#             out = model.decoder((t_en @ pred_aln_trg.unsqueeze(0).to(device)),
+#                                 F0_pred, N_pred, ref.squeeze().unsqueeze(0))
+#
+#         return out.squeeze().cpu().numpy(), s_pred
+#
+#     global audio_text_list
+#     global model_loaded
+#     model_loaded = 1  # Don't load llama until after StyleTTS2, otherwise we run into errors.
+#     while True:
+#         while audio_text_list == []:
+#             time.sleep(0.01)
+#         if audio_text_list[0] != "":
+#             try:
+#                 start = time.time()
+#                 noise = torch.randn(1, 1, 256).to(device)
+#                 if len(audio_text_list[0].split(" ")) == 0:
+#                     emotion = 1.0
+#                 else:
+#                     emotion = (2.0 + (math.log(len(audio_text_list[0].split(" ")) / 100) / 2)) * 1.4
+#                 wav = inference(audio_text_list[0], noise, diffusion_steps=7, embedding_scale=emotion)
+#                 # print("(StyleTTS2) Real time factor:", round((len(wav) / 24000) / (time.time() - start), 2))
+#                 #audio_play_list.append(wav)
+#             except Exception as e:
+#                 print(repr(e))
+#                 pass
+#         audio_text_list.pop(0)
