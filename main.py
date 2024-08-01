@@ -1028,12 +1028,12 @@ def user_listener(session, user, proto):
             print("Started user listener, adjusting audio")
             source = BytesSRAudioSource(voice_data[session][user.id])
             recognizer = sr.Recognizer()
-            recognizer.energy_threshold = 1300
-            recognizer.dynamic_energy_threshold = False
+            recognizer.energy_threshold = 1200
+            recognizer.dynamic_energy_threshold = True
             recognizer.adjust_for_ambient_noise(source)
             dq = Queue()
             rt = 100000.0 # There may be long periods of silence
-            pto = 1.0
+            pto = 5.0
             pt = None
             transcript = ['']
             def record_callback(_, audio:sr.AudioData) -> None:

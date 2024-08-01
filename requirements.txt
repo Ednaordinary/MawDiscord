@@ -23,5 +23,7 @@ einops
 pillow
 requests
 librosa
+einops-exts
+munch
 git+https://github.com/openai/whisper.git
 git+https://github.com/TeamPyOgg/PyOgg
