@@ -951,19 +951,27 @@ async def async_voice_channel_listener(proto, session):
             header = data[:12]
             data = data[12:]
             sequence, timestamp, ssrc = unpack_from(">xxHII", header)
-            decrypted = proto.decrypt(header, data)
+            try:
+                decrypted = proto.decrypt(header, data)
+            except:
+                pass
             opus_frame = OpusFrame(sequence, timestamp, time.perf_counter(), ssrc, decrypted)
             user_id = proto._wait_for_user_id(ssrc)
             try:
                 voice_data[session][user_id]
             except:
-
-                decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
-                voice_data[session][user_id] = array.array('B')
-                voice_data[session][user_id].extend(decoded)
+                try:
+                    decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
+                    voice_data[session][user_id] = array.array('B')
+                    voice_data[session][user_id].extend(decoded)
+                except:
+                    pass
             else:
-                decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
-                voice_data[session][user_id].extend(decoded)
+                try:
+                    decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
+                    voice_data[session][user_id].extend(decoded)
+                except:
+                    pass
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -985,7 +993,7 @@ def load_whisper():
         if not whisperloading:
             whisperloading = True
             try:
-                whisper_model = whisper.load_model("medium.en", device='cuda')
+                whisper_model = whisper.load_model("small.en", device='cuda')
             except Exception as e:
                 print(repr(e))
                 pass
@@ -1020,12 +1028,12 @@ def user_listener(session, user, proto):
             print("Started user listener, adjusting audio")
             source = BytesSRAudioSource(voice_data[session][user.id])
             recognizer = sr.Recognizer()
-            recognizer.energy_threshold = 1200
-            recognizer.dynamic_energy_threshold = True
+            recognizer.energy_threshold = 1300
+            recognizer.dynamic_energy_threshold = False
             recognizer.adjust_for_ambient_noise(source)
             dq = Queue()
-            rt = 20.0
-            pto = 4.0
+            rt = 100000.0 # There may be long periods of silence
+            pto = 1.0
             pt = None
             transcript = ['']
             def record_callback(_, audio:sr.AudioData) -> None:
@@ -1043,9 +1051,6 @@ def user_listener(session, user, proto):
                     pt = now
                     audio_data = b''.join(dq.queue)
                     dq.queue.clear()
-                    #audio_np = np.array(audio_data).astype(np.float32) / (2**15)
-                    #resampled = resample(audio_np, num=(len(audio_data)*16000/48000))
-                    #resampled = resampled / 32768.0
                     new_samples = round(len(audio_data) * 16000.0 / 48000)
                     print(new_samples)
                     if new_samples != 0: # only transcribe if there is something to transcribe
@@ -1065,15 +1070,21 @@ def user_listener(session, user, proto):
                         else:
                             transcript[-1] = text
                     #if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
-                    if ''.join(transcript).strip() != '' and ''.join(transcript).strip() != 'you':
+                    transcript_joined = ''.join(transcript).strip()
+                    # hallucinations
+                    hallucination_list = ["Thank you.", "thank you.", "You're welcome.", "Thanks for watching!", "Please subscribe to my channel.", "See you next time.", "Thank you for watching!"]
+                    for hallucination in hallucination_list:
+                        transcript_joined = transcript_joined.replace(hallucination, "")
+                    transcript_joined = transcript_joined.strip()
+                    if transcript_joined != '' and transcript_joined != 'you':
                         hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
                                                          loop=client.loop).result()
                         if not session.exclusive:
                             print("Session isn't exclusive")
-                            if "." in ''.join(transcript) or "?" in ''.join(transcript) or "!" in ''.join(transcript):
+                            if "." in transcript_joined or "?" in transcript_joined or "!" in transcript_joined:
                                 print("Found prompt in text")
                                 # I could simply use on_message, but it's easier, faster, to handle it here
-                                user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=''.join(transcript), username=user.global_name, avatar_url=user.display_avatar.url, thread=session.thread, wait=True), loop=client.loop).result()
+                                user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=transcript_joined, username=user.global_name if user.global_name else user.username, avatar_url=user.display_avatar.url, thread=session.thread, wait=True), loop=client.loop).result()
                                 maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
                                     loop=client.loop).result()
                                 relative_path = "./servers/" + str(session.guild.id)
@@ -1090,14 +1101,14 @@ def user_listener(session, user, proto):
                                     make_maw_character(relative_path, config)
                                     config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
                                     character = MawCharacter("Maw", config, True)
-                                user_message = MawCharacterMessage(content=user.global_name + " said: " + ''.join(transcript),
+                                user_message = MawCharacterMessage(content=user.global_name + " said: " + transcript_joined,
                                                                    message_id=str(user_hook_message.id), role="user")
                                 model_queue.append(
                                     CharacterGen(character_message=maw_message, character=character, thread=session.thread,
                                                  user_message=user_message, vc=session))
                         else:
                             asyncio.run_coroutine_threadsafe(
-                                coro=hook.send(content=''.join(transcript), username=user.global_name,
+                                coro=hook.send(content=transcript_joined, username=user.global_name,
                                                avatar_url=user.display_avatar.url, thread=session.thread),
                                 loop=client.loop).result()
                         transcript = ['']
