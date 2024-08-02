@@ -40,7 +40,8 @@ class VoiceRecvClient(nextcord.VoiceClient):
                 continue
             while not ready:
                 print("Unable to read")
-                time.sleep(0.01)
+                time.sleep(1.0)
+                error_count += 1
             try:
                 data = self.socket.recv(1024) # lower means faster latency probably
             except Exception as e:
