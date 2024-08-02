@@ -31,7 +31,8 @@ class VoiceRecvClient(nextcord.VoiceClient):
 
     async def listen(self):
         """Just yields received data. It's your choice what to do after that :). Doesn't stop until the client disconnects."""
-        while self.is_connected():
+        error_count = 0
+        while self.is_connected() and error_count < 10:
             try:
                 ready, _, _ = select([self.socket], [], [], 30)
             except Exception as e:
@@ -45,6 +46,7 @@ class VoiceRecvClient(nextcord.VoiceClient):
             except Exception as e:
                 print("Exception while receiving data:")
                 print(repr(e))
+                error_count += 1
             else:
                 yield data
 

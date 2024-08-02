@@ -848,23 +848,19 @@ async def async_watcher():
                         all_tokens += 1
                         tokens += 1
                         print(text, end="", flush=True)
-                        response += text
-                        final_response += text
                         if vc_session:
                             vc_response += text
+                            end_ids = [".", "\n", "!", "?"]
+                            for end_id in end_ids:
+                                if end_id in vc_response:
+                                    text += "<|eot_id|>"
+                                    vc_response += "<|eot_id|>"
                             if "<|eot_id|>" in vc_response:
                                 vc_response = vc_response.replace("<|eot_id|>", "")
                                 voice_queue[vc_session].append(vc_response)
                                 vc_response = ""
-                            # elif "." in vc_response:
-                            #     voice_queue[vc_session].append(vc_response)
-                            #     vc_response = ""
-                            # elif "?" in vc_response:
-                            #     voice_queue[vc_session].append(vc_response)
-                            #     vc_response = ""
-                            # elif "!" in vc_response:
-                            #     voice_queue[vc_session].append(vc_response)
-                            #     vc_response = ""
+                        response += text
+                        final_response += text
                         if "<|eot_id|>" in response:
                             eos = True
                             final_response = final_response.replace("<|eot_id|>", "")
@@ -903,14 +899,22 @@ async def async_watcher():
                         asyncio.run_coroutine_threadsafe(
                             coro=edit_add_hookredobutton(hook_list[channel.id], message, final_response,
                                                          thread), loop=client.loop)
-                    except:
+                    except Exception as e:
+                        exc_type, exc_obj, exc_tb = sys.exc_info()
+                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                        print(exc_type, fname, exc_tb.tb_lineno)
+                        print(repr(e))
                         pass
                 else:
                     try:
                         asyncio.run_coroutine_threadsafe(
                             coro=edit_add_hookeditbutton(hook_list[channel.id], message, final_response,
                                                          thread), loop=client.loop)
-                    except:
+                    except Exception as e:
+                        exc_type, exc_obj, exc_tb = sys.exc_info()
+                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                        print(exc_type, fname, exc_tb.tb_lineno)
+                        print(repr(e))
                         pass
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
@@ -990,7 +994,7 @@ async def async_voice_channel_listener(proto, session):
             try:
                 decrypted = proto.decrypt(header, data)
             except:
-                pass
+                continue
             opus_frame = OpusFrame(sequence, timestamp, time.perf_counter(), ssrc, decrypted)
             user_id = proto._wait_for_user_id(ssrc)
             try:
@@ -1030,7 +1034,10 @@ def load_speech():
             try:
                 speech_model = SpeakerRunner()
             except Exception as e:
-                raise e
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
+                print(repr(e))
                 speech_model = None
         else:
             while speech_model == None:
@@ -1047,6 +1054,9 @@ def request_speech(text, s_prev):
         wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=2.0)
         return wav, s_prev
     except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
         print(repr(e))
         raise e
 
@@ -1061,6 +1071,9 @@ def load_whisper():
             try:
                 whisper_model = whisper.load_model("small.en", device='cuda')
             except Exception as e:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
                 print(repr(e))
                 pass
             whisperloading = False
@@ -1080,7 +1093,11 @@ def request_whisper_text(audio):
     whispertranscribing = True
     try:
         transcribed_text = whisper_model.transcribe(audio, fp16=True, hallucination_silence_threshold=2)
-    except:
+    except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
+        print(repr(e))
         transcribed_text = ""
     whispertranscribing = False
     return transcribed_text
@@ -1150,7 +1167,7 @@ def user_listener(session, user, proto):
                             if "." in transcript_joined or "?" in transcript_joined or "!" in transcript_joined:
                                 print("Found prompt in text")
                                 # I could simply use on_message, but it's easier, faster, to handle it here
-                                user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=transcript_joined, username=user.global_name if user.global_name else user.username, avatar_url=user.display_avatar.url, thread=session.thread, wait=True), loop=client.loop).result()
+                                user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=transcript_joined, username=str(user.display_name), avatar_url=user.display_avatar.url, thread=session.thread, wait=True), loop=client.loop).result()
                                 maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
                                     loop=client.loop).result()
                                 relative_path = "./servers/" + str(session.guild.id)
@@ -1167,14 +1184,14 @@ def user_listener(session, user, proto):
                                     make_maw_character(relative_path, config)
                                     config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
                                     character = MawCharacter("Maw", config, True)
-                                user_message = MawCharacterMessage(content=user.global_name + " said: " + transcript_joined,
+                                user_message = MawCharacterMessage(content=str(user.display_name) + " said: " + transcript_joined,
                                                                    message_id=str(user_hook_message.id), role="user")
                                 model_queue.append(
                                     CharacterGen(character_message=maw_message, character=character, thread=session.thread,
                                                  user_message=user_message, vc=session))
                         else:
                             asyncio.run_coroutine_threadsafe(
-                                coro=hook.send(content=transcript_joined, username=user.global_name,
+                                coro=hook.send(content=transcript_joined, username=str(user.display_name),
                                                avatar_url=user.display_avatar.url, thread=session.thread),
                                 loop=client.loop).result()
                         transcript = ['']
@@ -1183,6 +1200,9 @@ def user_listener(session, user, proto):
                     time.sleep(0.01)
         except Exception as e:
             #It's important this stays on
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            print(exc_type, fname, exc_tb.tb_lineno)
             print(repr(e))
             continue_thread = True
         else:
@@ -1204,6 +1224,9 @@ def play_queue(proto, session):
                     time.sleep(0.01)
                 queue.pop(idx)
         except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            print(exc_type, fname, exc_tb.tb_lineno)
             print(repr(e))
 
 def voice_channel_watcher(session):
@@ -1245,8 +1268,10 @@ def voice_channel_watcher(session):
                     voice_play[session].append(play_bytes.read())
                 voice_queue[session].pop(idx)
             except Exception as e:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
                 print(repr(e))
-                raise e
         time.sleep(0.01)
     print("No longer connected")
     del voice_data[session]
@@ -1293,7 +1318,7 @@ async def on_message(message):
             if last_message[message.channel.id].author.id == client.user.id and second_last_message[
                 message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
                 maw_response = True
-        except:
+        except Exception as e:
             pass
     if isinstance(message.channel, discord.Thread):
         if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
@@ -1306,7 +1331,7 @@ async def on_message(message):
                 if last_message[message.channel.id].author.id == client.user.id and second_last_message[
                     message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
                     maw_response = True
-            except:
+            except Exception as e:
                 pass
     if isinstance(message.channel, discord.DMChannel):
         maw_response = True
@@ -1547,6 +1572,9 @@ async def voice(
             whisperusers += 1
             threading.Thread(target=voice_channel_watcher, args=[session]).start()
         except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            print(exc_type, fname, exc_tb.tb_lineno)
             print(repr(e))
             await interaction.response.send_message("Failed to connect to that channel!")
     else:
