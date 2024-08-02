@@ -1069,7 +1069,7 @@ def load_whisper():
         if not whisperloading:
             whisperloading = True
             try:
-                whisper_model = whisper.load_model("small.en", device='cuda')
+                whisper_model = whisper.load_model("medium.en", device='cuda')
             except Exception as e:
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]

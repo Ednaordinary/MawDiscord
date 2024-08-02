@@ -43,7 +43,7 @@ class VoiceRecvClient(nextcord.VoiceClient):
                 time.sleep(1.0)
                 error_count += 1
             try:
-                data = self.socket.recv(1024) # lower means faster latency probably
+                data = self.socket.recv(4096) # lower means faster latency probably
             except Exception as e:
                 print("Exception while receiving data:")
                 print(repr(e))
