@@ -850,11 +850,16 @@ async def async_watcher():
                         print(text, end="", flush=True)
                         if vc_session:
                             vc_response += text
-                            end_ids = [".", "\n", "!", "?"]
+                            #end_ids = [".", "\n", "!", "?"]
+                            #end_ids = ["\n"]
+                            end_ids = []
                             for end_id in end_ids:
                                 if end_id in vc_response:
                                     text += "<|eot_id|>"
                                     vc_response += "<|eot_id|>"
+                            find_image = re.compile(r'<-[\S\s]+>')
+                            for image in re.findall(find_image, vc_response):
+                                vc_response = vc_response.replace(image, "")
                             if "<|eot_id|>" in vc_response:
                                 vc_response = vc_response.replace("<|eot_id|>", "")
                                 voice_queue[vc_session].append(vc_response)
@@ -1069,7 +1074,7 @@ def load_whisper():
         if not whisperloading:
             whisperloading = True
             try:
-                whisper_model = whisper.load_model("medium.en", device='cuda')
+                whisper_model = whisper.load_model("base.en", device='cuda')
             except Exception as e:
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -1257,7 +1262,11 @@ def voice_channel_watcher(session):
             s_prev = None
             print("Making sentence:", data)
             try:
-                play_audio, s_prev = request_speech(data, s_prev)
+                wavs = []
+                for sentence in data.split("."):
+                    new_audio, s_prev = request_speech(sentence, s_prev)
+                    wavs.append(new_audio)
+                play_audio = np.concatenate(wavs)
                 print(play_audio)
                 with io.BytesIO() as play_bytes:
                     empty_torch = [0.0]*12000 # so it doesn't cut off
@@ -1272,6 +1281,7 @@ def voice_channel_watcher(session):
                 fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
                 print(exc_type, fname, exc_tb.tb_lineno)
                 print(repr(e))
+                voice_queue[session].pop(idx)
         time.sleep(0.01)
     print("No longer connected")
     del voice_data[session]
