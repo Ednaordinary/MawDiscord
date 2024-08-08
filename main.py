@@ -1,7 +1,5 @@
 import array
 import io
-import itertools
-import json
 import os
 import gc
 import re
@@ -14,9 +12,6 @@ import librosa
 import nextcord as discord
 import numpy as np
 import scipy
-import soundfile
-
-import decrypter
 from recorder import VoiceRecvClient, BytesSRAudioSource
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
@@ -33,7 +28,6 @@ import speech_recognition as sr
 import datetime
 import whisper
 from pyogg import OpusDecoder
-from scipy.signal import resample
 from scipy.io import wavfile
 
 from speech import SpeakerRunner
@@ -1574,8 +1568,11 @@ async def on_raw_message_delete(payload):
 
 @client.event
 async def on_voice_state_update(member, before, after):
+    if not after:
+        return
     voice_file = open("voice_watch.txt", "r")
     voice_file_lines = voice_file.readlines()
+    voice_file.close()
     watched = [int(i.split("-")[0][:-1]) if i[:-1] == "\n" else int(i.split("-")[0]) for i in voice_file_lines]
     if after.channel.id in watched:
         text_channel = None
@@ -1676,8 +1673,14 @@ def await_voice_allocation(session, transcribe_only):
     loop = asyncio.new_event_loop()
     loop.run_until_complete(async_await_voice_allocation(session, transcribe_only))
 
-@client.slash_command(description="Maw for voice channels", dm_permission=False)
+@client.slash_command(dm_permission=False)
 async def voice(
+        interaction: discord.Interaction,
+):
+    pass
+
+@voice.subcommand(description="Maw for voice channels")
+async def join(
         interaction: discord.Interaction,
         channel: discord.VoiceChannel,
         transcribe_only: Optional[bool] = discord.SlashOption(
@@ -1717,8 +1720,44 @@ async def enlist(
     interaction: discord.Interaction,
     channel: discord.VoiceChannel,
 ):
-    voice_file = open("voice_watch.txt", "a")
+    try:
+        voice_file = open("voice_watch.txt", "r")
+        voice_file_lines = voice_file.readlines()
+        for voice_channel in voice_file_lines:
+            if voice_channel.split("-")[0] == str(channel.id):
+                await interaction.response.send_message("This channel is already enlisted for auto-transcriptions!")
+                return
+        voice_file = open("voice_watch.txt", "a")
+        voice_file.write(str(channel.id) + "-" + str(interaction.channel.id) + "\n")
+        voice_file.close()
+        await interaction.response.send_message("Enlisted this channel to auto-transcriptions.")
+    except:
+        await interaction.response.send_message("Failed to enlist!")
 
+@voice.subcommand(description="Enlist a voice channel to auto-start transcription sessions.")
+async def delist(
+    interaction: discord.Interaction,
+    channel: discord.VoiceChannel,
+):
+    try:
+        voice_file = open("voice_watch.txt", "r")
+        voice_file_lines = voice_file.readlines()
+        channel_found = False
+        for voice_channel in voice_file_lines:
+            if voice_channel.split("-")[0] == str(channel.id):
+                channel_found = True
+                break
+        if channel_found:
+            voice_file = open("voice_watch.txt", "w")
+            for line in voice_file_lines:
+                if line.split("-")[0] != str(channel.id):
+                    voice_file.write(line)
+            voice_file.close()
+            await interaction.response.send_message("Delisted this channel.")
+        else:
+            await interaction.response.send_message("This channel is not enlisted!")
+    except:
+        await interaction.response.send_message("Failed to delist!")
 
 threading.Thread(target=watcher).start()
 client.run(TOKEN)
