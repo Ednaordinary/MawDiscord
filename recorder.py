@@ -35,11 +35,12 @@ class VoiceRecvClient(nextcord.VoiceClient):
         connect_time = time.time()  # Sometimes likes to stop recieving data? so disconnect and reconnect every once in a while.
         error_count = 0
         while self.is_connected() and error_count < 10:
-            if connect_time < time.time() - 60:  # reconnect every 1 minute
-                connect_time = time.time()
-                self.socket.shutdown()
-                self.socket.close()
-                await self.ws.loop.sock_connect(self.socket, (self.endpoint_ip, self.voice_port))
+            # idk doesn't seem to work yet
+            # if connect_time < time.time() - 60:  # reconnect every 1 minute
+            #     connect_time = time.time()
+            #     self.socket.shutdown()
+            #     self.socket.close()
+            #     await self.ws.loop.sock_connect(self.socket, (self.endpoint_ip, self.voice_port))
             try:
                 ready, _, _ = select([self.socket], [], [], 30)
             except Exception as e:

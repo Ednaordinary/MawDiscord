@@ -54,6 +54,7 @@ whispertranscribing = False
 speech_model = None
 speechloading = None
 stay_allocated = 0
+typing_channels = []
 exclusive = {}
 model_callback_limiter = 1 # doesn't matter what this value is
 maw_voice_channels = []
@@ -533,6 +534,26 @@ class ResetContextButton(discord.ui.View):
 
 
 # this class is used during maw voice sessions
+class VoiceResponse(discord.ui.View):
+    def __init__(self, *, timeout=None, session):
+        super().__init__(timeout=timeout)
+        self.session = session
+
+    @discord.ui.button(label="Disconnect", style=discord.ButtonStyle.red)
+    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await self.session.proto.disconnect()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+    @discord.ui.button(label="Transcribe mode", style=discord.ButtonStyle.green)
+    async def transcribe_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global exclusive
+        exclusive[self.session] = True
+        if interaction.message.thread != None:
+            await interaction.message.thread.send("Switched to transcribe-only mode")
+        await interaction.response.edit_message(view=VoiceTranscribe(session=self.session))
+
+# this class is used during maw voice sessions
 class VoiceTranscribe(discord.ui.View):
     def __init__(self, *, timeout=None, session):
         super().__init__(timeout=timeout)
@@ -544,33 +565,13 @@ class VoiceTranscribe(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(view=self)
-    @discord.ui.button(label="Transcribe mode", style=discord.ButtonStyle.red)
-    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        global exclusive
-        exclusive[self.session] = True
-        if interaction.message.thread != None:
-            await interaction.message.thread.send("Switched to transcribe-only mode")
-        await interaction.response.pong()
-
-# this class is used during maw voice sessions
-class VoiceRespond(discord.ui.View):
-    def __init__(self, *, timeout=None, session):
-        super().__init__(timeout=timeout)
-        self.session = session
-
-    @discord.ui.button(label="Disconnect", style=discord.ButtonStyle.red)
-    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await self.session.proto.disconnect()
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-    @discord.ui.button(label="Response mode", style=discord.ButtonStyle.red)
-    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @discord.ui.button(label="Response mode", style=discord.ButtonStyle.green)
+    async def response_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         global exclusive
         exclusive[self.session] = False
         if interaction.message.thread != None:
             await interaction.message.thread.send("Switched to response mode")
-        await interaction.response.pong()
+        await interaction.response.edit_message(view=VoiceResponse(session=self.session))
 
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
@@ -767,6 +768,7 @@ async def async_watcher():
     global model_queue
     global voice_queue
     global stay_allocated
+    global typing_channels
     model = None
     cache = None
     self_allocated = False
@@ -776,15 +778,17 @@ async def async_watcher():
     tokenizer = ExLlamaV2Tokenizer(config)
     while True:
         if model_queue == []:
-            if model != None and self_allocated == True:
+            if self_allocated:
+                stay_allocated -= 1
+                self_allocated = False
+            if model != None:
                 if stay_allocated == 0:
-                    # If this bot is allocated, there's no delete the model until we deallocate.
+                    # If this bot is allocated, there's no need to delete the model until we deallocate.
                     # Drastically decreases voice response time
                     model = None
                     cache = None
                     gc.collect()
                     torch.cuda.empty_cache()
-                    stay_allocated -= 1
                     vram.deallocate("Maw")
             time.sleep(0.01)
         else:
@@ -794,6 +798,7 @@ async def async_watcher():
                                               name="at " + str(round(all_tokens / all_time, 2)) + " avg tps"),
                     status=discord.Status.online), loop=client.loop)
             current_gen = model_queue[0]
+            typing_channels.append([current_gen.character_message.channel, time.time() - 10])
             if model == None:
                 print("allocating memory")
                 vram.allocate("Maw")
@@ -860,8 +865,8 @@ async def async_watcher():
             sampler.temperature = 0.6
             #sampler.min_temp = 0.6
             #sampler.max_temp = 0.7
-            sampler.token_repetition_penalty = randint(1150, 1250) / 1000
-            sampler.token_repetition_range = 50
+            sampler.token_repetition_penalty = randint(1250, 1350) / 1000
+            sampler.token_repetition_range = 100
             sampler.token_repetition_decay = 10
             job = ExLlamaV2DynamicJob(
                 input_ids=input_ids,
@@ -969,6 +974,12 @@ async def async_watcher():
                         print(exc_type, fname, exc_tb.tb_lineno)
                         print(repr(e))
                         pass
+            try:
+                for idx, i in enumerate(typing_channels):
+                    if i[0] == current_gen.character_message.channel:
+                        typing_channels.pop(idx)
+            except Exception as e:
+                print(repr(e))
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
                 activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(
@@ -1104,7 +1115,7 @@ def request_speech(text, s_prev):
     try:
         text = text + '.'
         noise = torch.randn(1, 1, 256).to("cuda")
-        wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=2.5)
+        wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=1.8)
         return wav, s_prev
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -1350,6 +1361,23 @@ def voice_channel_watcher(session):
         whisperloading = False
 
 
+def typing_watcher():
+    global typing_channels
+    while True:
+        for idx, i in enumerate(typing_channels):
+            if i[1] < time.time() - 8:
+                if isinstance(i[0], discord.CategoryChannel):
+                    continue
+                if isinstance(i[0], discord.ForumChannel):
+                    continue
+                if isinstance(i[0], discord.StageChannel):
+                    continue
+                asyncio.run_coroutine_threadsafe(
+                    coro=i[0].trigger_typing(),
+                    loop=client.loop)
+                typing_channels[idx][1] = time.time()
+        time.sleep(0.01)
+
 @client.event
 async def on_ready():
     print(f'{client.user.name} has connected to Discord!')
@@ -1568,7 +1596,9 @@ async def on_raw_message_delete(payload):
 
 @client.event
 async def on_voice_state_update(member, before, after):
-    if not after:
+    if member.bot:
+        return
+    if not after.channel:
         return
     voice_file = open("voice_watch.txt", "r")
     voice_file_lines = voice_file.readlines()
@@ -1578,7 +1608,7 @@ async def on_voice_state_update(member, before, after):
         text_channel = None
         for idx, x in enumerate(watched):
             if x == after.channel.id:
-                text_channel = int(voice_file_lines.split("-")[idx][1])
+                text_channel = int(voice_file_lines[idx].split("-")[1])
         if after.channel.members != []:
             global maw_voice_channels
             if not member.guild in [x.guild for x in maw_voice_channels] and text_channel != None:
@@ -1669,9 +1699,9 @@ async def async_await_voice_allocation(session):
     global whisperusers
     whisperusers += 1
 
-def await_voice_allocation(session, transcribe_only):
+def await_voice_allocation(session):
     loop = asyncio.new_event_loop()
-    loop.run_until_complete(async_await_voice_allocation(session, transcribe_only))
+    loop.run_until_complete(async_await_voice_allocation(session))
 
 @client.slash_command(dm_permission=False)
 async def voice(
@@ -1760,4 +1790,5 @@ async def delist(
         await interaction.response.send_message("Failed to delist!")
 
 threading.Thread(target=watcher).start()
+threading.Thread(target=typing_watcher).start()
 client.run(TOKEN)
