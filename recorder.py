@@ -19,6 +19,7 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
+
 # this file takes HEAVY inspiration from both https://github.com/imayhaveborkedit/discord-ext-voice-recv/ and https://github.com/nextcord/nextcord/pull/1113
 
 class VoiceRecvClient(nextcord.VoiceClient):
@@ -27,12 +28,18 @@ class VoiceRecvClient(nextcord.VoiceClient):
 
     async def connect(self, *, reconnect: bool, timeout: float) -> None:
         await super().connect(reconnect=reconnect, timeout=timeout)
-        await self.ws.loop.sock_connect(self.socket, (self.endpoint_ip, self.voice_port))
 
     async def listen(self):
         """Just yields received data. It's your choice what to do after that :). Doesn't stop until the client disconnects."""
+        await self.ws.loop.sock_connect(self.socket, (self.endpoint_ip, self.voice_port))
+        connect_time = time.time()  # Sometimes likes to stop recieving data? so disconnect and reconnect every once in a while.
         error_count = 0
         while self.is_connected() and error_count < 10:
+            if connect_time < time.time() - 60:  # reconnect every 1 minute
+                connect_time = time.time()
+                self.socket.shutdown()
+                self.socket.close()
+                await self.ws.loop.sock_connect(self.socket, (self.endpoint_ip, self.voice_port))
             try:
                 ready, _, _ = select([self.socket], [], [], 30)
             except Exception as e:
@@ -43,7 +50,7 @@ class VoiceRecvClient(nextcord.VoiceClient):
                 time.sleep(1.0)
                 error_count += 1
             try:
-                data = self.socket.recv(4096) # lower means faster latency probably
+                data = self.socket.recv(4096)  # lower means faster latency? probably
             except Exception as e:
                 print("Exception while receiving data:")
                 print(repr(e))
@@ -60,6 +67,7 @@ class VoiceRecvClient(nextcord.VoiceClient):
             time.sleep(0.01)
 
         return user_data["user_id"]
+
 
 # class entirely from https://github.com/imayhaveborkedit/discord-ext-voice-recv/blob/main/discord/ext/voice_recv/extras/speechrecognition.py
 class BytesSRAudioSource(sr.AudioSource):

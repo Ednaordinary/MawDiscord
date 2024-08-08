@@ -59,6 +59,7 @@ whisperusers = 0
 whispertranscribing = False
 speech_model = None
 speechloading = None
+stay_allocated = 0
 model_callback_limiter = 1 # doesn't matter what this value is
 maw_voice_channels = []
 os.environ["OMP_NUM_THREADS"] = "16"
@@ -731,20 +732,26 @@ async def async_watcher():
     global all_time
     global model_queue
     global voice_queue
+    global stay_allocated
     model = None
     cache = None
+    self_allocated = False
     model_dir = "./llama-3.1-8b-instruct-abliterated-exl2-7.5bpw"
     config = ExLlamaV2Config(model_dir)
     config.arch_compat_overrides()
     tokenizer = ExLlamaV2Tokenizer(config)
     while True:
         if model_queue == []:
-            if model != None:
-                model = None
-                cache = None
-                gc.collect()
-                torch.cuda.empty_cache()
-                vram.deallocate("Maw")
+            if model != None and self_allocated == True:
+                if stay_allocated == 0:
+                    # If this bot is allocated, there's no delete the model until we deallocate.
+                    # Drastically decreases voice response time
+                    model = None
+                    cache = None
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    stay_allocated -= 1
+                    vram.deallocate("Maw")
             time.sleep(0.01)
         else:
             if all_tokens != 0:
@@ -756,6 +763,8 @@ async def async_watcher():
             if model == None:
                 print("allocating memory")
                 vram.allocate("Maw")
+                stay_allocated += 1
+                self_allocated = True
                 print("request sent")
                 async for i in vram.wait_for_allocation("Maw"):
                     if current_gen.character.maw:
@@ -773,7 +782,7 @@ async def async_watcher():
                 def model_load_callback(current, total):
                     print(current, total)
                     global model_callback_limiter
-                    if time.time() > model_callback_limiter + 0.5: # only bursts for the first second or so, so its rate can be higher
+                    if time.time() > model_callback_limiter + 0.6: # only bursts for the first second or so, so its rate can be higher
                         if current_gen.character.maw:
                             asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(str(int(current*100 / total)) + "%"),
                                                              loop=client.loop)
@@ -866,22 +875,22 @@ async def async_watcher():
                                 vc_response = ""
                         response += text
                         final_response += text
+                        if "<-" in response and character.maw and not isinstance(
+                                message.channel, discord.DMChannel):
+                            find_image = re.compile(r'<-[\S\s]+>')
+                            for image in re.findall(find_image, final_response):
+                                print("image detected")
+                                final_response = final_response.replace(image, "")
+                                image = image[2:-1]
+                                if image[-1] == "-": image = image[:-1]
+                                if image != "":
+                                    with open("../DanteMode/queue.txt", "a") as image_queue:
+                                        image_queue.write(
+                                            "\n" + str(channel.id) + "|" + str(image).replace("\n", "\\n"))
                         if "<|eot_id|>" in response:
                             eos = True
                             final_response = final_response.replace("<|eot_id|>", "")
                             response = response.replace("<|eot_id|>", "")
-                            if "<-" in response and character.maw and not isinstance(
-                                    message.channel, discord.DMChannel):
-                                find_image = re.compile(r'<-[\S\s]+>')
-                                for image in re.findall(find_image, final_response):
-                                    print("image detected")
-                                    final_response = final_response.replace(image, "")
-                                    image = image[2:-1]
-                                    if image[-1] == "-": image = image[:-1]
-                                    if image != "":
-                                        with open("../DanteMode/queue.txt", "a") as image_queue:
-                                            image_queue.write(
-                                                "\n" + str(channel.id) + "|" + str(image).replace("\n", "\\n"))
                         if time.time() - limiter > 1.2:
                             limiter = time.time()
                             if character.maw:
@@ -1056,7 +1065,7 @@ def request_speech(text, s_prev):
     try:
         text = text + '.'
         noise = torch.randn(1, 1, 256).to("cuda")
-        wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=2.0)
+        wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=2.5)
         return wav, s_prev
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -1074,7 +1083,7 @@ def load_whisper():
         if not whisperloading:
             whisperloading = True
             try:
-                whisper_model = whisper.load_model("base.en", device='cuda')
+                whisper_model = whisper.load_model("medium.en", device='cuda')
             except Exception as e:
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -1129,8 +1138,8 @@ def user_listener(session, user, proto):
                 data = audio.get_raw_data()
                 dq.put(data)
             recognizer.listen_in_background(source, record_callback, phrase_time_limit=rt)
-            print("Finished setting up audio")
-            # num = 0
+            asyncio.run_coroutine_threadsafe(coro=session.thread.send("Finished calibrating audio for " + str(user.display_name)),
+                                                           loop=client.loop)
             while proto.is_connected():
                 if not dq.empty():
                     now = datetime.datetime.now(datetime.UTC)
@@ -1171,23 +1180,22 @@ def user_listener(session, user, proto):
                             print("Session isn't exclusive")
                             if "." in transcript_joined or "?" in transcript_joined or "!" in transcript_joined:
                                 print("Found prompt in text")
-                                # I could simply use on_message, but it's easier, faster, to handle it here
+                                # I could simply use on_message, but it's easier, faster, to handle it here.
+                                # Threading this unfortunately won't help, since this is client loop bound.
                                 user_hook_message = asyncio.run_coroutine_threadsafe(coro=hook.send(content=transcript_joined, username=str(user.display_name), avatar_url=user.display_avatar.url, thread=session.thread, wait=True), loop=client.loop).result()
                                 maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
                                     loop=client.loop).result()
                                 relative_path = "./servers/" + str(session.guild.id)
                                 if os.path.isdir(relative_path):
                                     config = read_config(relative_path)
-                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
+                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
                                     character = MawCharacter("Maw", config, True)
-                                    if os.path.isfile(relative_path + "/history.txt"):
-                                        history = character.read_history()
                                 else:
                                     system_prompt = regular_system_prompt
                                     config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                                                 relative_path + "/history.txt", "Maw", None, 0, 0)
                                     make_maw_character(relative_path, config)
-                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name
+                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
                                     character = MawCharacter("Maw", config, True)
                                 user_message = MawCharacterMessage(content=str(user.display_name) + " said: " + transcript_joined,
                                                                    message_id=str(user_hook_message.id), role="user")
@@ -1198,7 +1206,7 @@ def user_listener(session, user, proto):
                             asyncio.run_coroutine_threadsafe(
                                 coro=hook.send(content=transcript_joined, username=str(user.display_name),
                                                avatar_url=user.display_avatar.url, thread=session.thread),
-                                loop=client.loop).result()
+                                loop=client.loop)
                         transcript = ['']
                         pass
                 else:
@@ -1553,6 +1561,39 @@ async def reset(
     else:
         await interaction.response.send_message("No context found to clear.")
 
+async def async_await_voice_allocation(session, transcribe_only):
+    #don't hold up the client thread waiting for allocation
+    threading.Thread(target=voice_channel_watcher, args=[session]).start()
+    vram.allocate("Maw")
+    global stay_allocated
+    stay_allocated += 1
+    alloc_message = None
+    async for i in vram.wait_for_allocation("Maw"):
+        if alloc_message == None:
+            alloc_message = asyncio.run_coroutine_threadsafe(
+                coro=session.thread.send("Waiting for " + str(i) + " before starting\n(Audio spoken during this time will still be transcribed)"),
+                loop=client.loop).result()
+        else:
+            alloc_message = asyncio.run_coroutine_threadsafe(
+                coro=alloc_message.edit("Waiting for " + str(
+                    i) + " before starting\n(Audio spoken during this time will still be transcribed)"),
+                loop=client.loop)
+    if alloc_message != None:
+        alloc_message = asyncio.run_coroutine_threadsafe(
+            coro=alloc_message.edit("Loading models..."),
+            loop=client.loop).result()
+    if not transcribe_only:
+        # This thread must occur first otherwise whisper freaks out (I think?)
+        speech_thread = threading.Thread(target=load_speech)
+        speech_thread.start()
+    threading.Thread(target=load_whisper).start()
+    global whisperusers
+    whisperusers += 1
+
+def await_voice_allocation(session, transcribe_only):
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(async_await_voice_allocation(session, transcribe_only))
+
 @client.slash_command(description="Maw for voice channels", dm_permission=False)
 async def voice(
         interaction: discord.Interaction,
@@ -1573,14 +1614,7 @@ async def voice(
             thread = await sent_message.create_thread(name="Maw Voice Session")
             session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto, exclusive=transcribe_only)
             maw_voice_channels.append(session)
-            # This thread must occur first otherwise whisper freaks out (I think?)
-            if not transcribe_only:
-                speech_thread = threading.Thread(target=load_speech)
-                speech_thread.start()
-            threading.Thread(target=load_whisper).start()
-            global whisperusers
-            whisperusers += 1
-            threading.Thread(target=voice_channel_watcher, args=[session]).start()
+            threading.Thread(target=await_voice_allocation, args=[session, transcribe_only]).start()
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
