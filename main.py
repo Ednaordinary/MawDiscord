@@ -169,7 +169,7 @@ class CharacterModal(discord.ui.Modal):
                                                 thread.id) + "/history.txt", self.name.value, None, locked_id=locked_id,
                                             original_user_id=interaction.user.id)
             make_maw_character("./characters/" + str(root.guild.id) + "/" + str(thread.id), config)
-            character = MawCharacter(self.name.value, config, False)
+            local_character = MawCharacter(self.name.value, config, False)
             history = None
             if self.first_message.value != "":
                 webhook = await get_webhook(root.channel)
@@ -182,18 +182,18 @@ class CharacterModal(discord.ui.Modal):
                                                       wait=True, thread=thread, view=EditMessageButton())
                 history = [MawCharacterMessage(self.first_message.value, hook_message.id, "character")]
             if history:
-                character.write_history(history)
+                local_character.write_history(history)
 
 
 # this class is only used by characters
 class EditMessageModal(discord.ui.Modal):
-    def __init__(self, original_content, character):
+    def __init__(self, original_content, local_character):
         super().__init__(
             title="Edit Message",
             timeout=60 * 60 * 24,  # 1 day
         )
         self.original_content = original_content
-        self.character = character
+        self.character = local_character
         self.content = discord.ui.TextInput(
             label="Message",
             style=discord.TextInputStyle.paragraph,
@@ -271,6 +271,41 @@ class EditSystemPromptModal(discord.ui.Modal):
         await interaction.response.edit_message(content=str(self.new_prompt.value)[
                                                         :1900] + "\n**Do not delete this message or the character will stop working**")
 
+
+class RedoStartMessageModal(discord.ui.Modal):
+    def __init__(self, original_content, local_character):
+        super().__init__(
+            title="Redo Message",
+            timeout=60 * 60 * 24,  # 1 day
+        )
+        self.original_content = original_content
+        self.character = local_character
+        self.content = discord.ui.TextInput(
+            label="Starting point",
+            style=discord.TextInputStyle.paragraph,
+            placeholder="Text to start the redo with",
+            default_value=self.original_content,
+            required=True,
+            min_length=1,
+            max_length=1000,
+        )
+        self.add_item(self.content)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # This should not be called with maw, we don't allow redoing maw message with a start value
+        history = self.character.read_history()
+        if int(history[-1].message_id) == interaction.message.id:
+            try:
+                self.character.write_history(history[:-1])
+            except:
+                pass
+            await interaction.response.edit_message(content=self.content.value)
+            global model_queue
+            model_queue.append(
+                CharacterGen(character_message=interaction.message, local_character=self.character, thread=interaction.channel,
+                             user_message=None, vc=False, start=self.content.value))
+        else:
+            await interaction.response.edit_message(view=None)
 
 # this class is only used by characters
 class EditEnvironmentButton(discord.ui.View):
@@ -403,16 +438,16 @@ class RedoMessageButton(discord.ui.View):
             config = read_config("./servers/" + str(interaction.channel.id))
         else:
             config = read_config("./servers/" + str(interaction.guild.id))
-        character = MawCharacter("Maw", config, True)
-        history = character.read_history()
+        local_character = MawCharacter("Maw", config, True)
+        history = local_character.read_history()
         if int(history[-1].message_id.split("-")[0]) == interaction.message.id:
             try:
-                character.write_history(history[:-1])
+                local_character.write_history(history[:-1])
             except:
                 pass
             await interaction.response.edit_message(content="...")
             model_queue.append(
-                CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
+                CharacterGen(character_message=interaction.message, local_character=local_character, thread=interaction.channel,
                              user_message=None, vc=False))
         else:
             await interaction.response.edit_message(view=None)
@@ -426,48 +461,56 @@ class EditAndRedoMessageButton(discord.ui.View):
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, custom_id="edit-edit-and-redo-message")
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.send_modal(EditMessageModal(interaction.message.content, character))
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character))
 
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary, custom_id="redo-edit-and-redo-message")
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            history = character.read_history()
+            history = local_character.read_history()
             if int(history[-1].message_id) == interaction.message.id:
                 try:
-                    character.write_history(history[:-1])
+                    local_character.write_history(history[:-1])
                 except:
                     pass
                 await interaction.response.edit_message(content="...")
                 model_queue.append(
-                    CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
+                    CharacterGen(character_message=interaction.message, local_character=local_character, thread=interaction.channel,
                                  user_message=None, vc=False))
             else:
                 await interaction.response.edit_message(view=None)
+    @discord.ui.button(label="Redo w/ Start", style=discord.ButtonStyle.primary, custom_id="redo-start-edit-and-redo-message")
+    async def redo_start_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
+        local_character = MawCharacter(name=config.name, config=config, maw=False)
+        if config.locked_id != 0 and config.locked_id != interaction.user.id:
+            await interaction.response.pong()
+        else:
+            await interaction.response.send_modal(RedoStartMessageModal(interaction.message.content, local_character))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-and-redo-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         #Only characters use this class so delete is here
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            history = character.read_history()
+            history = local_character.read_history()
             message_idx = None
             for idx, message in enumerate(history):
                 if int(message.message_id) == interaction.message.id:
                     message_idx = idx
             if message_idx != None:
                 history.pop(idx)
-            character.write_history(history)
+            local_character.write_history(history)
             await interaction.response.pong()
             try:
                 await interaction.message.delete()
@@ -485,21 +528,21 @@ class EditMessageButton(discord.ui.View):
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, custom_id="edit-edit-message")
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.send_modal(EditMessageModal(interaction.message.content, character))
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         #Only characters use this class so delete is here
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            history = character.read_history()
+            history = local_character.read_history()
             message_idx = None
             for idx, message in enumerate(history):
                 if int(message.message_id) == interaction.message.id:
@@ -624,12 +667,13 @@ class MawCharacter:
 
 
 class CharacterGen:
-    def __init__(self, character_message, character, thread, user_message, vc):
+    def __init__(self, character_message, local_character, thread, user_message, vc, start=""):
         self.character_message = character_message
-        self.character = character
+        self.character = local_character
         self.thread = thread
         self.user_message = user_message
         self.vc = vc
+        self.start = start
 
 
 class MawVoiceSession:
@@ -683,7 +727,7 @@ def read_config(path):
                                   path + "/ids.txt", path + "/history.txt", lines[3], None, locked_id, original_id)
 
 
-def history_to_llama(history, config):
+def history_to_llama(history, config, start):
     tokenizer = AutoTokenizer.from_pretrained(
         "mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated",
     )
@@ -693,7 +737,15 @@ def history_to_llama(history, config):
     system_prompt = tokenizer.apply_chat_template(
         conversation=[{"role": "system", "content": config.system_prompt.replace(r"\n", "\n")}],
         tokenize=True, return_tensors='pt', add_generation_prompt=False)
+    print(system_prompt)
     history.reverse()
+    # The start message gives the model something to work off of. It is defined by the user
+    #start_message = torch.tensor([i for i in tokenizer.encode(start, return_tensors='pt', add_special_tokens=False)[0]]).unsqueeze(0)
+    if start != "":
+        start_message = tokenizer.encode(start, return_tensors='pt', add_special_tokens=False)
+        print(start_message)
+        llama.append(start_message)
+        token_length += start_message.shape[1]
     for idx, message in enumerate(history):
         role = "assistant" if message.role == "character" else message.role
         llama_message = [{"role": role, "content": message.content.replace(r"\n", "\n")}]
@@ -720,7 +772,7 @@ def history_to_llama(history, config):
     print("tokens:", token_length)
     #llama = str([tokenizer.decode(x, skip_special_tokens=False) for x in llama])
     llama = tokenizer.encode(tokenizer.batch_decode(llama, skip_special_tokens=False)[0].replace(r"\n", "\n"),
-                             add_special_tokens=True, return_tensors='pt')
+                              add_special_tokens=False, return_tensors='pt')
     #llama = "".join(llama)
     #llama = llama.replace(r"\n", "\n")
     return llama
@@ -830,13 +882,17 @@ async def async_watcher():
                                 coro=temp_edit(current_gen.character_message.id, thread, str(int(current*100 / total)) + "%", channel.id),
                                 loop=client.loop)
                         model_callback_limiter = time.time()
-                cache_amount = 256
+                cache_amount = 500
                 while True:
                     try:
                         model.load_autosplit(cache, progress=False, callback=model_load_callback)
                     except Exception as e:
-                        cache_amount -= 50
-                        cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=cache_amount * 256)
+                        cache_amount -= 10
+                        if cache_amount < 20:
+                            print("Lowering cache did not help")
+                            raise e
+                        else:
+                            cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=cache_amount * 256)
                     else:
                         break
             gc.collect()
@@ -846,7 +902,7 @@ async def async_watcher():
                 history.append(current_gen.user_message)
                 current_gen.character.write_history(
                     history)  # if message is edited or deleted during generation, it needs to be reflected
-            model_input = history_to_llama(history, current_gen.character.config)
+            model_input = history_to_llama(history, current_gen.character.config, current_gen.start)
             message = current_gen.character_message
             character = current_gen.character
             tokens = 0
@@ -877,11 +933,11 @@ async def async_watcher():
                 decode_special_tokens=True,
                 seed=randint(1, 10000000),
             )
-            response = ""
-            final_response = ""
+            response = current_gen.start
+            final_response = current_gen.start
             if current_gen.vc:
                 vc_session = current_gen.vc
-                vc_response = ""
+                vc_response = current_gen.start
             else:
                 vc_session = None
             generator.enqueue(job)
@@ -1251,7 +1307,7 @@ def user_listener(session, user, proto):
                                 user_message = MawCharacterMessage(content=str(user.display_name) + " said: " + transcript_joined,
                                                                    message_id=str(user_hook_message.id), role="user")
                                 model_queue.append(
-                                    CharacterGen(character_message=maw_message, character=character, thread=session.thread,
+                                    CharacterGen(character_message=maw_message, local_character=character, thread=session.thread,
                                                  user_message=user_message, vc=session))
                         else:
                             asyncio.run_coroutine_threadsafe(
@@ -1350,6 +1406,8 @@ def voice_channel_watcher(session):
     for idx, x in enumerate(maw_voice_channels):
         if x == session:
             maw_voice_channels.pop(idx)
+    global stay_allocated
+    stay_allocated -= 1
     global whisperusers
     whisperusers -= 1
     if whisperusers == 0:
@@ -1498,7 +1556,7 @@ async def on_message(message):
         user_message = MawCharacterMessage(content=(
                                                        message.author.global_name if message.author.global_name else message.author.name) + " said: " + message.content.strip(),
                                            message_id=str(message.id), role="user")
-        model_queue.append(CharacterGen(character_message=maw_message, character=character, thread=message.channel,
+        model_queue.append(CharacterGen(character_message=maw_message, local_character=character, thread=message.channel,
                                         user_message=user_message, vc=False))
         try:
             if isinstance(message.channel, discord.DMChannel):
@@ -1534,7 +1592,7 @@ async def on_message(message):
             #character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
             user_message = MawCharacterMessage(content=message.content, message_id=str(message.id), role="user")
             model_queue.append(
-                CharacterGen(character_message=character_message, character=character, thread=message.channel,
+                CharacterGen(character_message=character_message, local_character=character, thread=message.channel,
                              user_message=user_message, vc=False))
             if old_message_id:
                 try:
@@ -1731,7 +1789,7 @@ async def join(
             if transcribe_only:
                 await sent_message.edit(view=VoiceTranscribe(session=session))
             else:
-                await sent_message.edit(view=VoiceRespond(session=session))
+                await sent_message.edit(view=VoiceResponse(session=session))
             global exclusive
             exclusive[session] = transcribe_only
             maw_voice_channels.append(session)
