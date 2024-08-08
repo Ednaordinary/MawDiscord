@@ -60,6 +60,7 @@ whispertranscribing = False
 speech_model = None
 speechloading = None
 stay_allocated = 0
+exclusive = {}
 model_callback_limiter = 1 # doesn't matter what this value is
 maw_voice_channels = []
 os.environ["OMP_NUM_THREADS"] = "16"
@@ -537,6 +538,46 @@ class ResetContextButton(discord.ui.View):
             await interaction.response.edit_message(content="No context found to delete.", view=None)
 
 
+# this class is used during maw voice sessions
+class VoiceTranscribe(discord.ui.View):
+    def __init__(self, *, timeout=None, session):
+        super().__init__(timeout=timeout)
+        self.session = session
+
+    @discord.ui.button(label="Disconnect", style=discord.ButtonStyle.red)
+    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await self.session.proto.disconnect()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+    @discord.ui.button(label="Transcribe mode", style=discord.ButtonStyle.red)
+    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global exclusive
+        exclusive[self.session] = True
+        if interaction.message.thread != None:
+            await interaction.message.thread.send("Switched to transcribe-only mode")
+        await interaction.response.pong()
+
+# this class is used during maw voice sessions
+class VoiceRespond(discord.ui.View):
+    def __init__(self, *, timeout=None, session):
+        super().__init__(timeout=timeout)
+        self.session = session
+
+    @discord.ui.button(label="Disconnect", style=discord.ButtonStyle.red)
+    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await self.session.proto.disconnect()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+    @discord.ui.button(label="Response mode", style=discord.ButtonStyle.red)
+    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global exclusive
+        exclusive[self.session] = False
+        if interaction.message.thread != None:
+            await interaction.message.thread.send("Switched to response mode")
+        await interaction.response.pong()
+
 class MawCharacterMessage:
     def __init__(self, content, message_id, role):
         self.content = content
@@ -597,12 +638,11 @@ class CharacterGen:
 
 
 class MawVoiceSession:
-    def __init__(self, guild, message, thread, proto, exclusive):
+    def __init__(self, guild, message, thread, proto):
         self.guild = guild
         self.message = message
         self.thread = thread
         self.proto = proto
-        self.exclusive = exclusive
 
 def make_maw_character(path, config):
     os.makedirs(path, exist_ok=True)
@@ -861,11 +901,11 @@ async def async_watcher():
                             vc_response += text
                             #end_ids = [".", "\n", "!", "?"]
                             #end_ids = ["\n"]
-                            end_ids = []
-                            for end_id in end_ids:
-                                if end_id in vc_response:
-                                    text += "<|eot_id|>"
-                                    vc_response += "<|eot_id|>"
+                            # end_ids = []
+                            # for end_id in end_ids:
+                            #     if end_id in vc_response:
+                            #         text += "<|eot_id|>"
+                            #         vc_response += "<|eot_id|>"
                             find_image = re.compile(r'<-[\S\s]+>')
                             for image in re.findall(find_image, vc_response):
                                 vc_response = vc_response.replace(image, "")
@@ -873,6 +913,11 @@ async def async_watcher():
                                 vc_response = vc_response.replace("<|eot_id|>", "")
                                 voice_queue[vc_session].append(vc_response)
                                 vc_response = ""
+                            end_ids = [".", "\n", "!", "?"]
+                            for end_id in end_ids:
+                                if end_id in vc_response:
+                                    voice_queue[vc_session].append(vc_response)
+                                    vc_response = ""
                         response += text
                         final_response += text
                         if "<-" in response and character.maw and not isinstance(
@@ -1123,6 +1168,7 @@ def user_listener(session, user, proto):
     while continue_thread:
         try:
             global voice_data
+            global exclusive
             print("Started user listener, adjusting audio")
             source = BytesSRAudioSource(voice_data[session][user.id])
             recognizer = sr.Recognizer()
@@ -1176,7 +1222,7 @@ def user_listener(session, user, proto):
                     if transcript_joined != '' and transcript_joined != 'you':
                         hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
                                                          loop=client.loop).result()
-                        if not session.exclusive:
+                        if not exclusive[session]:
                             print("Session isn't exclusive")
                             if "." in transcript_joined or "?" in transcript_joined or "!" in transcript_joined:
                                 print("Found prompt in text")
@@ -1293,6 +1339,8 @@ def voice_channel_watcher(session):
         time.sleep(0.01)
     print("No longer connected")
     del voice_data[session]
+    global exclusive
+    del exclusive[session]
     global maw_voice_channels
     for idx, x in enumerate(maw_voice_channels):
         if x == session:
@@ -1524,6 +1572,36 @@ async def on_raw_message_delete(payload):
                 hook = await get_webhook(channel.parent)
                 await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButton())
 
+@client.event
+async def on_voice_state_update(member, before, after):
+    voice_file = open("voice_watch.txt", "r")
+    voice_file_lines = voice_file.readlines()
+    watched = [int(i.split("-")[0][:-1]) if i[:-1] == "\n" else int(i.split("-")[0]) for i in voice_file_lines]
+    if after.channel.id in watched:
+        text_channel = None
+        for idx, x in enumerate(watched):
+            if x == after.channel.id:
+                text_channel = int(voice_file_lines.split("-")[idx][1])
+        if after.channel.members != []:
+            global maw_voice_channels
+            if not member.guild in [x.guild for x in maw_voice_channels] and text_channel != None:
+                try:
+                    proto = await after.channel.connect(cls=VoiceRecvClient)
+                    channel = await client.fetch_channel(text_channel)
+                    sent_message = await channel.send(
+                        "Starting a voice session in " + str(channel.name))
+                    thread = await sent_message.create_thread(name="Maw Voice Session")
+                    session = MawVoiceSession(guild=member.guild, message=sent_message, thread=thread, proto=proto)
+                    await sent_message.edit(view=VoiceTranscribe(session=session))
+                    global exclusive
+                    exclusive[session] = True
+                    maw_voice_channels.append(session)
+                    threading.Thread(target=await_voice_allocation, args=[session]).start()
+                except Exception as e:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    print(exc_type, fname, exc_tb.tb_lineno)
+                    print(repr(e))
 
 @client.slash_command(description="Sends a form to make a character", dm_permission=False)
 async def character(
@@ -1561,7 +1639,7 @@ async def reset(
     else:
         await interaction.response.send_message("No context found to clear.")
 
-async def async_await_voice_allocation(session, transcribe_only):
+async def async_await_voice_allocation(session):
     #don't hold up the client thread waiting for allocation
     threading.Thread(target=voice_channel_watcher, args=[session]).start()
     vram.allocate("Maw")
@@ -1582,10 +1660,14 @@ async def async_await_voice_allocation(session, transcribe_only):
         alloc_message = asyncio.run_coroutine_threadsafe(
             coro=alloc_message.edit("Loading models..."),
             loop=client.loop).result()
-    if not transcribe_only:
+    #if not transcribe_only:
         # This thread must occur first otherwise whisper freaks out (I think?)
-        speech_thread = threading.Thread(target=load_speech)
-        speech_thread.start()
+        # Is definitely an issue in MawChat
+        #speech_thread = threading.Thread(target=load_speech)
+        #speech_thread.start()
+    # quick switching + allocation means there's not much reason not to keep the speech model loaded
+    speech_thread = threading.Thread(target=load_speech)
+    speech_thread.start()
     threading.Thread(target=load_whisper).start()
     global whisperusers
     whisperusers += 1
@@ -1612,9 +1694,15 @@ async def voice(
             sent_message = await interaction.response.send_message("Starting a voice session in " + str(channel.name))
             sent_message = await sent_message.fetch()
             thread = await sent_message.create_thread(name="Maw Voice Session")
-            session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto, exclusive=transcribe_only)
+            session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto)
+            if transcribe_only:
+                await sent_message.edit(view=VoiceTranscribe(session=session))
+            else:
+                await sent_message.edit(view=VoiceRespond(session=session))
+            global exclusive
+            exclusive[session] = transcribe_only
             maw_voice_channels.append(session)
-            threading.Thread(target=await_voice_allocation, args=[session, transcribe_only]).start()
+            threading.Thread(target=await_voice_allocation, args=[session]).start()
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -1623,6 +1711,14 @@ async def voice(
             await interaction.response.send_message("Failed to connect to that channel!")
     else:
         await interaction.response.send_message("Already connected to a channel in this server!")
+
+@voice.subcommand(description="Enlist a voice channel to auto-start transcription sessions.")
+async def enlist(
+    interaction: discord.Interaction,
+    channel: discord.VoiceChannel,
+):
+    voice_file = open("voice_watch.txt", "a")
+
 
 threading.Thread(target=watcher).start()
 client.run(TOKEN)
