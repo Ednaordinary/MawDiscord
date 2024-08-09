@@ -123,7 +123,7 @@ class CharacterModal(discord.ui.Modal):
             description = self.description.value + "."
         else:
             description = self.description.value
-        prompt = "Your name is " + self.name.value + ". " + description + " To do an action, you surround actions in stars *like this*. You surround your dialogue in quotes " + '"like this"' + ". The person you are talking to may do the same with stars and quotes."
+        prompt = "Your name is " + self.name.value + ". " + description
         response = prompt
         cut_value = 1900
         if len(response) > cut_value:
@@ -824,7 +824,7 @@ async def async_watcher():
     model = None
     cache = None
     self_allocated = False
-    model_dir = "./llama-3.1-8b-instruct-abliterated-exl2-7.5bpw"
+    model_dir = "./llama-3.1-8b-instruct-abliterated-exl2-4.5bpw" # 4.5bpw has a good bit to perplexity ratio. High speed, low size.
     config = ExLlamaV2Config(model_dir)
     config.arch_compat_overrides()
     tokenizer = ExLlamaV2Tokenizer(config)
@@ -895,6 +895,7 @@ async def async_watcher():
                             cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=cache_amount * 256)
                     else:
                         break
+                print("Final cache size:", cache_amount * 256)
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
