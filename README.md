@@ -1,6 +1,35 @@
 # Maw
 
-Discord implementation of Maw. Also features character creation with /character
+## Talk with a local llm with all your friends, straight in discord
+
+
+
+https://github.com/user-attachments/assets/8869e6d1-02b9-4ce3-aa8d-c10e65f7dcb5
+
+
+## Or.. make your own characters! Edit anything you want, and make it your own!
+
+
+
+https://github.com/user-attachments/assets/04419b07-d64b-40af-88ac-ab91e10b88cf
+
+
+## Want to voice chat with it? Transcribe discord calls?
+
+Switch to the voice-chat branch
+
+
+
+https://github.com/user-attachments/assets/7317a1e6-a4c1-4cc9-99bf-4b768f4bdc20
+
+
+## Maw can even generate images for you!
+
+[Dante](https://github.com/Ednaordinary/DanteMode) must be installed alongside Maw, cloned to the same directory
+
+![image](https://github.com/user-attachments/assets/faba6cf5-7f33-4df8-a8b8-7203acf19150)
+
+
 
 ## Requirements
 
@@ -15,7 +44,7 @@ Discord implementation of Maw. Also features character creation with /character
 
 `cd MawDiscord`
 
-`mkdir character`
+`mkdir characters`
 
 `mkdir servers`
 
