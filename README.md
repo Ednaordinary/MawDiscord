@@ -16,8 +16,6 @@ https://github.com/user-attachments/assets/04419b07-d64b-40af-88ac-ab91e10b88cf
 
 ## Want to voice chat with it? Transcribe discord calls?
 
-Switch to the voice-chat branch
-
 
 
 https://github.com/user-attachments/assets/7317a1e6-a4c1-4cc9-99bf-4b768f4bdc20
