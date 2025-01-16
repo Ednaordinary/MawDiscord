@@ -14,7 +14,7 @@ import numpy as np
 import scipy
 from recorder import VoiceRecvClient, BytesSRAudioSource
 from dotenv import load_dotenv
-from transformers import AutoTokenizer, AwqConfig
+from transformers import AutoTokenizer
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, ExLlamaV2Sampler, \
     ExLlamaV2DynamicJobAsync, ExLlamaV2DynamicGeneratorAsync

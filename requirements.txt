@@ -27,3 +27,15 @@ einops-exts
 munch
 git+https://github.com/openai/whisper.git
 git+https://github.com/TeamPyOgg/PyOgg
+torchaudio
+PyYAML
+typing_extensions
+tqdm
+scipy
+outetts
+nltk
+phonemizer
+pandas
+datasets
+auto_fp8
+hqq
