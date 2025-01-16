@@ -1,39 +1,70 @@
+import array
 import io
 import os
 import gc
 import re
 import sys
+import wave
+from queue import Queue
+from struct import unpack_from
+
+import librosa
 import nextcord as discord
+import numpy as np
+import scipy
+from recorder import VoiceRecvClient, BytesSRAudioSource
 from dotenv import load_dotenv
-from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokenizer, HqqConfig
+from transformers import AutoTokenizer
+from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
+from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, ExLlamaV2Sampler
 import time
 import torch
 import threading
 import asyncio
 from typing import Optional
 import vram
+from random import randint
+import speech_recognition as sr
+import datetime
+import whisper
+from pyogg import OpusDecoder
+from scipy.io import wavfile
 
-#max_matching_ngram_size=2, prompt_lookup_num_tokens=20,
-model_args = dict(max_new_tokens=768, use_cache=True, do_sample=True, repetition_penalty=1.2) # , max_matching_ngram_size=2, prompt_lookup_num_tokens=20
-                  #cache_implementation="quantized",
-                  #cache_config={"backend": "quanto", "nbits": 4})
+from speech import SpeakerRunner
 
 model_queue = []
 hook_list = {}  # Hooks must be renewed every bot launch otherwise we can't add buttons to webhook messages.
 second_last_message = {}
 last_message = {}
 watched_avatars = []
+voice_data = {}
+voice_queue = {}
+voice_play = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
-client = discord.Client(intents=intents)
+client = discord.AutoShardedClient(intents=intents)
+discord.opus._load_default()
 all_tokens = 0
 all_time = 0
-
+whisper_model = None
+whisperloading = False
+whisperusers = 0
+whispertranscribing = False
+speech_model = None
+speechloading = None
+stay_allocated = 0
+typing_channels = []
+exclusive = {}
+model_callback_limiter = 1  # doesn't matter what this value is
+maw_voice_channels = []
 os.environ["OMP_NUM_THREADS"] = "16"
 os.environ["TOKENIZERS_PARALLELISM"] = "1"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+dm_system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to "
+regular_system_prompt = "\nYou are Maw, an intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message.\n\nYou are able to generate or create images by making a generation prompt: enclose a description of an image in <- and ->, for example: <-A hot dog on a grill, the grill sits on a wooden table with condiments on it->. Do not generate an image unless explicitly asked to do so.\nIf asked to generate an image, add a short description or acknowledgement before you add the generation prompt.\n\nYou are talking in a server named "
 
 
 # this class is only used by characters
@@ -91,7 +122,7 @@ class CharacterModal(discord.ui.Modal):
             description = self.description.value + "."
         else:
             description = self.description.value
-        prompt = "Your name is " + self.name.value + ". " + description + " To do an action, you surround actions in stars *like this*. You surround your dialogue in quotes " + '"like this"' + ". The person you are talking to may do the same with stars and quotes."
+        prompt = "Your name is " + self.name.value + ". " + description
         response = prompt
         cut_value = 1900
         if len(response) > cut_value:
@@ -137,7 +168,7 @@ class CharacterModal(discord.ui.Modal):
                                                 thread.id) + "/history.txt", self.name.value, None, locked_id=locked_id,
                                             original_user_id=interaction.user.id)
             make_maw_character("./characters/" + str(root.guild.id) + "/" + str(thread.id), config)
-            character = MawCharacter(self.name.value, config, False)
+            local_character = MawCharacter(self.name.value, config, False)
             history = None
             if self.first_message.value != "":
                 webhook = await get_webhook(root.channel)
@@ -150,18 +181,18 @@ class CharacterModal(discord.ui.Modal):
                                                       wait=True, thread=thread, view=EditMessageButton())
                 history = [MawCharacterMessage(self.first_message.value, hook_message.id, "character")]
             if history:
-                character.write_history(history)
+                local_character.write_history(history)
 
 
 # this class is only used by characters
 class EditMessageModal(discord.ui.Modal):
-    def __init__(self, original_content, character):
+    def __init__(self, original_content, local_character):
         super().__init__(
             title="Edit Message",
             timeout=60 * 60 * 24,  # 1 day
         )
         self.original_content = original_content
-        self.character = character
+        self.character = local_character
         self.content = discord.ui.TextInput(
             label="Message",
             style=discord.TextInputStyle.paragraph,
@@ -238,6 +269,43 @@ class EditSystemPromptModal(discord.ui.Modal):
         make_maw_character("./characters/" + str(interaction.guild.id) + "/" + str(self.thread.id), config)
         await interaction.response.edit_message(content=str(self.new_prompt.value)[
                                                         :1900] + "\n**Do not delete this message or the character will stop working**")
+
+
+class RedoStartMessageModal(discord.ui.Modal):
+    def __init__(self, original_content, local_character):
+        super().__init__(
+            title="Redo Message",
+            timeout=60 * 60 * 24,  # 1 day
+        )
+        self.original_content = original_content
+        self.character = local_character
+        self.content = discord.ui.TextInput(
+            label="Starting point",
+            style=discord.TextInputStyle.paragraph,
+            placeholder="Text to start the redo with",
+            default_value=self.original_content,
+            required=True,
+            min_length=1,
+            max_length=1000,
+        )
+        self.add_item(self.content)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # This should not be called with maw, we don't allow redoing maw message with a start value
+        history = self.character.read_history()
+        if int(history[-1].message_id) == interaction.message.id:
+            try:
+                self.character.write_history(history[:-1])
+            except:
+                pass
+            await interaction.response.edit_message(content=self.content.value)
+            global model_queue
+            model_queue.append(
+                CharacterGen(character_message=interaction.message, local_character=self.character,
+                             thread=interaction.channel,
+                             user_message=None, vc=False, start=self.content.value))
+        else:
+            await interaction.response.edit_message(view=None)
 
 
 # this class is only used by characters
@@ -371,19 +439,29 @@ class RedoMessageButton(discord.ui.View):
             config = read_config("./servers/" + str(interaction.channel.id))
         else:
             config = read_config("./servers/" + str(interaction.guild.id))
-        character = MawCharacter("Maw", config, True)
-        history = character.read_history()
+        local_character = MawCharacter("Maw", config, True)
+        history = local_character.read_history()
         if int(history[-1].message_id.split("-")[0]) == interaction.message.id:
             try:
-                character.write_history(history[:-1])
+                local_character.write_history(history[:-1])
             except:
                 pass
             await interaction.response.edit_message(content="...")
             model_queue.append(
-                CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
-                             user_message=None))
+                CharacterGen(character_message=interaction.message, local_character=local_character,
+                             thread=interaction.channel,
+                             user_message=None, vc=False))
         else:
             await interaction.response.edit_message(view=None)
+
+    @discord.ui.button(label="End", style=discord.ButtonStyle.red, custom_id="maw-end")
+    async def end_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global last_message
+        global second_last_message
+        last_message[interaction.channel.id] = None
+        second_last_message[interaction.channel.id] = None
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
 
 
 # this class is only used by characters
@@ -394,51 +472,59 @@ class EditAndRedoMessageButton(discord.ui.View):
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, custom_id="edit-edit-and-redo-message")
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.send_modal(EditMessageModal(interaction.message.content, character))
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character))
 
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary, custom_id="redo-edit-and-redo-message")
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            history = character.read_history()
+            history = local_character.read_history()
             if int(history[-1].message_id) == interaction.message.id:
                 try:
-                    character.write_history(history[:-1])
+                    local_character.write_history(history[:-1])
                 except:
                     pass
                 await interaction.response.edit_message(content="...")
                 model_queue.append(
-                    CharacterGen(character_message=interaction.message, character=character, thread=interaction.channel,
-                                 user_message=None))
+                    CharacterGen(character_message=interaction.message, local_character=local_character,
+                                 thread=interaction.channel,
+                                 user_message=None, vc=False))
             else:
-                print()
-                print(history[-1].message_id, history[-1].content)
-                print(interaction.message.id, interaction.message.content)
                 await interaction.response.edit_message(view=None)
+
+    @discord.ui.button(label="Redo w/ Start", style=discord.ButtonStyle.primary,
+                       custom_id="redo-start-edit-and-redo-message")
+    async def redo_start_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
+        local_character = MawCharacter(name=config.name, config=config, maw=False)
+        if config.locked_id != 0 and config.locked_id != interaction.user.id:
+            await interaction.response.pong()
+        else:
+            await interaction.response.send_modal(RedoStartMessageModal(interaction.message.content, local_character))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-and-redo-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         #Only characters use this class so delete is here
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            history = character.read_history()
+            history = local_character.read_history()
             message_idx = None
             for idx, message in enumerate(history):
                 if int(message.message_id) == interaction.message.id:
                     message_idx = idx
             if message_idx != None:
                 history.pop(idx)
-            character.write_history(history)
+            local_character.write_history(history)
             await interaction.response.pong()
             try:
                 await interaction.message.delete()
@@ -456,21 +542,21 @@ class EditMessageButton(discord.ui.View):
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, custom_id="edit-edit-message")
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.send_modal(EditMessageModal(interaction.message.content, character))
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.primary, custom_id="delete-edit-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         #Only characters use this class so delete is here
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
-        character = MawCharacter(config.name, config, False)
+        local_character = MawCharacter(config.name, config, False)
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            history = character.read_history()
+            history = local_character.read_history()
             message_idx = None
             for idx, message in enumerate(history):
                 if int(message.message_id) == interaction.message.id:
@@ -502,6 +588,50 @@ class ResetContextButton(discord.ui.View):
             os.remove(self.ids_path)
         else:
             await interaction.response.edit_message(content="No context found to delete.", view=None)
+
+
+# this class is used during maw voice sessions
+class VoiceResponse(discord.ui.View):
+    def __init__(self, *, timeout=None, session):
+        super().__init__(timeout=timeout)
+        self.session = session
+
+    @discord.ui.button(label="Disconnect", style=discord.ButtonStyle.red)
+    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await self.session.proto.disconnect()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Transcribe mode", style=discord.ButtonStyle.green)
+    async def transcribe_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global exclusive
+        exclusive[self.session] = True
+        if interaction.message.thread != None:
+            await interaction.message.thread.send("Switched to transcribe-only mode")
+        await interaction.response.edit_message(view=VoiceTranscribe(session=self.session))
+
+
+# this class is used during maw voice sessions
+class VoiceTranscribe(discord.ui.View):
+    def __init__(self, *, timeout=None, session):
+        super().__init__(timeout=timeout)
+        self.session = session
+
+    @discord.ui.button(label="Disconnect", style=discord.ButtonStyle.red)
+    async def disconnect_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await self.session.proto.disconnect()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Response mode", style=discord.ButtonStyle.green)
+    async def response_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global exclusive
+        exclusive[self.session] = False
+        if interaction.message.thread != None:
+            await interaction.message.thread.send("Switched to response mode")
+        await interaction.response.edit_message(view=VoiceResponse(session=self.session))
 
 
 class MawCharacterMessage:
@@ -555,11 +685,21 @@ class MawCharacter:
 
 
 class CharacterGen:
-    def __init__(self, character_message, character, thread, user_message):
+    def __init__(self, character_message, local_character, thread, user_message, vc, start=""):
         self.character_message = character_message
-        self.character = character
+        self.character = local_character
         self.thread = thread
         self.user_message = user_message
+        self.vc = vc
+        self.start = start
+
+
+class MawVoiceSession:
+    def __init__(self, guild, message, thread, proto):
+        self.guild = guild
+        self.message = message
+        self.thread = thread
+        self.proto = proto
 
 
 def make_maw_character(path, config):
@@ -606,36 +746,55 @@ def read_config(path):
                                   path + "/ids.txt", path + "/history.txt", lines[3], None, locked_id, original_id)
 
 
-def history_to_llama(history, tokenizer, config):
+def history_to_llama(history, config, start):
+    tokenizer = AutoTokenizer.from_pretrained(
+        "mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated",
+    )
     llama = []
     token_length = 0
-    print(config.system_prompt)
-    system_prompt = tokenizer.apply_chat_template(conversation=[{"role": "system", "content": config.system_prompt}],
-                                                  tokenize=True, return_tensors='pt', add_generation_prompt=False)
+    #print(config.system_prompt)
+    system_prompt = tokenizer.apply_chat_template(
+        conversation=[{"role": "system", "content": config.system_prompt.replace(r"\n", "\n")}],
+        tokenize=True, return_tensors='pt', add_generation_prompt=False)
+    print(system_prompt)
     history.reverse()
+    # The start message gives the model something to work off of. It is defined by the user
+    #start_message = torch.tensor([i for i in tokenizer.encode(start, return_tensors='pt', add_special_tokens=False)[0]]).unsqueeze(0)
+    if start != "":
+        start_message = tokenizer.encode(start, return_tensors='pt', add_special_tokens=False)
+        print(start_message)
+        llama.append(start_message)
+        token_length += start_message.shape[1]
     for idx, message in enumerate(history):
         role = "assistant" if message.role == "character" else message.role
-        llama_message = [{"role": role, "content": message.content}]
+        llama_message = [{"role": role, "content": message.content.replace(r"\n", "\n")}]
+        #print(message.content)
         llama_message = tokenizer.apply_chat_template(conversation=llama_message, tokenize=True, return_tensors='pt',
                                                       add_generation_prompt=True if idx == 0 else False)
-        if token_length + llama_message.shape[1] < (14000 - system_prompt.shape[1]):
+        if token_length + llama_message.shape[1] < (128000 - system_prompt.shape[1]):
             llama.append(llama_message)
             token_length += llama_message.shape[1]
         else:
             break
-    if config.environment_prompt != "":
+    if config.environment_prompt.strip() != "":
         environment_prompt = tokenizer.apply_chat_template(
-            conversation=[{"role": "system", "content": config.environment_prompt}], tokenize=True, return_tensors='pt',
+            conversation=[{"role": "system", "content": config.environment_prompt.replace(r"\n", "\n")}],
+            tokenize=True, return_tensors='pt',
             add_generation_prompt=False)
-        if token_length + environment_prompt.shape[1] < (14000 - system_prompt.shape[1]):
+        if token_length + environment_prompt.shape[1] < (128000 - system_prompt.shape[1]):
             llama.append(environment_prompt)
             token_length += environment_prompt.shape[1]
     llama.append(system_prompt)
     llama.reverse()
     history.reverse()  # this was inplace so it needs to be flipped back
     llama = torch.cat(llama, 1)
-    print(token_length, llama.shape)
-    return llama, token_length
+    print("tokens:", token_length)
+    #llama = str([tokenizer.decode(x, skip_special_tokens=False) for x in llama])
+    llama = tokenizer.encode(tokenizer.batch_decode(llama, skip_special_tokens=False)[0].replace(r"\n", "\n"),
+                             add_special_tokens=False, return_tensors='pt')
+    #llama = "".join(llama)
+    #llama = llama.replace(r"\n", "\n")
+    return llama
 
 
 async def edit_add_redobutton(message, content):
@@ -653,7 +812,7 @@ async def edit_add_hookeditbutton(hook, message, content, thread):
     await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditMessageButton())
 
 
-async def get_webhook(channel):
+async def get_webhook(channel) -> discord.Webhook:
     # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
     try:
         hook = hook_list[channel.id]
@@ -668,113 +827,40 @@ async def get_webhook(channel):
 
 
 async def temp_edit(message_id, thread_id, content, channel_id):
-    await hook_list[channel_id].edit_message(message_id=message_id, content=content, thread=thread_id)
-
-
-def message_updater(message, streamer, character, thread, channel):
-    full_text = ""
-    limiter = time.time()
-    for text in streamer:
-        print(text, flush=True, end='')
-        full_text = full_text + text
-        if character.maw and not isinstance(channel, discord.DMChannel):
-            images = re.findall(r"<-[\S\s]+>", full_text)
-            if images != None:
-                with open("../DanteMode/queue.txt", "a") as image_queue:
-                    for image in images:
-                        full_text = full_text.replace(image, "")
-                        image = image[2:-1]
-                        try:
-                            if image[-1] == "-":
-                                image = image[:-1]
-                        except:
-                            pass
-                        image_queue.write("\n" + str(channel.id) + "|" + image.replace("\n", "\\n"))
-            pings = re.findall(r"\|+[\S\s]+\|", full_text)
-            if pings != None:
-                for ping in pings:
-                    old_ping = ping
-                    ping = ping.lower().strip()[2:-1]
-                    new_ping = "No ping found. (" + ping + ")"
-                    ping_cutoff = 2
-                    try:
-                        int(ping)
-                    except:
-                        for member in channel.members:
-                            if member.nick and len(ping) > ping_cutoff and ping in member.nick.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif member.nick and ping == member.nick.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif member.global_name and len(
-                                    ping) > ping_cutoff and ping in member.global_name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif member.global_name and ping == member.global_name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                            elif ping == member.name.lower().strip():
-                                new_ping = "<@" + str(member.id) + ">"
-                    else:
-                        if int(ping) in [x.id for x in channel.members]:
-                            new_ping = "<@" + str(ping) + ">"
-                        else:
-                            for member in channel.members:
-                                if member.nick and len(ping) > ping_cutoff and ping in member.nick.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif member.nick and ping == member.nick.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif member.global_name and len(
-                                        ping) > ping_cutoff and ping in member.global_name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif member.global_name and ping == member.global_name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif len(ping) > ping_cutoff and ping in member.name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                                elif ping == member.name.lower().strip():
-                                    new_ping = "<@" + str(member.id) + ">"
-                    full_text = full_text.replace(old_ping, new_ping)
-        if time.time() - limiter > 0.8:
-            limiter = time.time()
-            if character.maw:
-                asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
-            else:
-                asyncio.run_coroutine_threadsafe(coro=temp_edit(message.id, thread, full_text, channel.id),
-                                                 loop=client.loop)
-    global model_queue
-    if character.maw:
-        if not message.channel.id in [x.character_message.channel.id for x in model_queue[1:]]:
-            asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, full_text),
-                                             loop=client.loop)
-        else:
-            asyncio.run_coroutine_threadsafe(coro=message.edit(full_text), loop=client.loop)
-    else:
-        if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
-            asyncio.run_coroutine_threadsafe(
-                coro=edit_add_hookredobutton(hook_list[channel.id], message, full_text,
-                                             thread), loop=client.loop)
-        else:
-            asyncio.run_coroutine_threadsafe(
-                coro=edit_add_hookeditbutton(hook_list[channel.id], message, full_text,
-                                             thread), loop=client.loop)
+    try:
+        await hook_list[channel_id].edit_message(message_id=message_id, content=content, thread=thread_id)
+    except Exception as e:
+        print(repr(e))
 
 
 async def async_watcher():
     global all_tokens
     global all_time
     global model_queue
+    global voice_queue
+    global stay_allocated
+    global typing_channels
     model = None
-    tokenizer = AutoTokenizer.from_pretrained(
-        "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-        #"meta-llama/Meta-Llama-3.1-8B-Instruct"
-    )  # can just be kept loaded
-    stop_token = tokenizer.encode("<|eot_id|>")
+    cache = None
+    self_allocated = False
+    model_dir = "./llama-3.1-8b-instruct-abliterated-exl2-4.5bpw"  # 4.5bpw has a good bit to perplexity ratio. High speed, low size.
+    config = ExLlamaV2Config(model_dir)
+    config.arch_compat_overrides()
+    tokenizer = ExLlamaV2Tokenizer(config)
     while True:
         if model_queue == []:
+            if self_allocated:
+                stay_allocated -= 1
+                self_allocated = False
             if model != None:
-                model = None
-                gc.collect()
-                torch.cuda.empty_cache()
-                vram.deallocate("Maw")
+                if stay_allocated == 0:
+                    # If this bot is allocated, there's no need to delete the model until we deallocate.
+                    # Drastically decreases voice response time
+                    model = None
+                    cache = None
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    vram.deallocate("Maw")
             time.sleep(0.01)
         else:
             if all_tokens != 0:
@@ -783,36 +869,56 @@ async def async_watcher():
                                               name="at " + str(round(all_tokens / all_time, 2)) + " avg tps"),
                     status=discord.Status.online), loop=client.loop)
             current_gen = model_queue[0]
+            typing_channels.append([current_gen.character_message.channel, time.time() - 10])
             if model == None:
                 print("allocating memory")
                 vram.allocate("Maw")
+                stay_allocated += 1
+                self_allocated = True
                 print("request sent")
                 async for i in vram.wait_for_allocation("Maw"):
                     if current_gen.character.maw:
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
                 print("memory allocated, loading model")
-                # group_size=64, quant_zero=False, quant_scale=False,
-                #quant_config  = HqqConfig(nbits=2, axis=0, group_size=16, quant_zero=True, quant_scale=True, offload_meta=True, compute_dtype=torch.bfloat16)
-                model = AutoModelForCausalLM.from_pretrained(
-                    "failspy/Meta-Llama-3-8B-Instruct-abliterated-v3",
-                    #local_files_only=True,
-                    device_map="cuda",
-                    torch_dtype=torch.bfloat16,
-                    low_cpu_mem_usage=True,
-                    attn_implementation="flash_attention_2",
-                    #quantization_config=quant_config,
-                )
-                #prepare_for_inference(model, backend="torchao_int4")
-                #prepare_for_inference(model, backend="marlin", allow_merge=True)
-                #model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True, device_map="cuda", low_cpu_mem_usage=True, attn_implementation="flash_attention_2")
-                # model = AutoModelForCausalLM.from_pretrained("llama-3.1-8b-instruct-eetq", local_files_only=True,
-                #                                              device_map="cuda", low_cpu_mem_usage=True,
-                #                                              attn_implementation="flash_attention_2")
-                # model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", local_files_only=True,
-                #                                              device_map="cuda", low_cpu_mem_usage=True, torch_dtype=torch.bfloat16,
-                #                                              attn_implementation="flash_attention_2")
-                model.eval()
+                if isinstance(current_gen.thread, discord.Thread):
+                    thread, channel = current_gen.thread, current_gen.thread.parent
+                else:
+                    thread, channel = None, current_gen.thread
+                model = ExLlamaV2(config)
+                cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=500 * 256)
+                global model_callback_limiter  # no concurrent load, so global is okay
+                model_callback_limiter = time.time()
+
+                def model_load_callback(current, total):
+                    print(current, total)
+                    global model_callback_limiter
+                    if time.time() > model_callback_limiter + 0.6:  # only bursts for the first second or so, so its rate can be higher
+                        if current_gen.character.maw:
+                            asyncio.run_coroutine_threadsafe(
+                                coro=current_gen.character_message.edit(str(int(current * 100 / total)) + "%"),
+                                loop=client.loop)
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                coro=temp_edit(current_gen.character_message.id, thread,
+                                               str(int(current * 100 / total)) + "%", channel.id),
+                                loop=client.loop)
+                        model_callback_limiter = time.time()
+
+                cache_amount = 500
+                while True:
+                    try:
+                        model.load_autosplit(cache, progress=False, callback=model_load_callback)
+                    except Exception as e:
+                        cache_amount -= 10
+                        if cache_amount < 20:
+                            print("Lowering cache did not help")
+                            raise e
+                        else:
+                            cache = ExLlamaV2Cache_Q8(model, lazy=True, max_seq_len=cache_amount * 256)
+                    else:
+                        break
+                print("Final cache size:", cache_amount * 256)
             gc.collect()
             torch.cuda.empty_cache()
             history = current_gen.character.read_history()
@@ -820,39 +926,154 @@ async def async_watcher():
                 history.append(current_gen.user_message)
                 current_gen.character.write_history(
                     history)  # if message is edited or deleted during generation, it needs to be reflected
-            model_input, token_length = history_to_llama(history, tokenizer, current_gen.character.config)
-            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-            if isinstance(current_gen.thread, discord.Thread):
-                thread, channel = current_gen.thread, current_gen.thread.parent
+            model_input = history_to_llama(history, current_gen.character.config, current_gen.start)
+            message = current_gen.character_message
+            character = current_gen.character
+            tokens = 0
+            limiter = time.time()
+            generator = ExLlamaV2DynamicGenerator(
+                model=model,
+                cache=cache,
+                tokenizer=tokenizer,
+                max_q_size=16,
+            )
+            #input_ids = tokenizer.encode(model_input, add_bos=False, encode_special_tokens=True)
+            input_ids = model_input
+            print(model_input)
+            sampler = ExLlamaV2Sampler.Settings.greedy()
+            sampler.top_p = 0.9
+            sampler.temperature = 0.6
+            #sampler.min_temp = 0.6
+            #sampler.max_temp = 0.7
+            sampler.token_repetition_penalty = randint(1250, 1350) / 1000
+            sampler.token_repetition_range = 100
+            sampler.token_repetition_decay = 10
+            job = ExLlamaV2DynamicJob(
+                input_ids=input_ids,
+                max_new_tokens=768,
+                token_healing=True,
+                #stop_conditions="<|eot_id|>",
+                gen_settings=sampler,
+                decode_special_tokens=True,
+                seed=randint(1, 10000000),
+            )
+            response = current_gen.start
+            final_response = current_gen.start
+            if current_gen.vc:
+                vc_session = current_gen.vc
+                vc_response = current_gen.start
             else:
-                thread, channel = None, current_gen.thread
-            streamer_thread = threading.Thread(target=message_updater,
-                                               args=[current_gen.character_message, streamer, current_gen.character,
-                                                     thread, channel])
-            streamer_thread.start()
+                vc_session = None
+            generator.enqueue(job)
+            eos = False
             start_time = time.time()
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True):
-                # if token_length > 6200:
-                #     print("using quantized cache")
-                #     response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                #                               eos_token_id=stop_token, cache_implementation = "quantized", cache_config={"backend": "quanto", "nbits": 4})
-                # else:
-                response = model.generate(input_ids=model_input.to('cuda'), **model_args, streamer=streamer,
-                                        eos_token_id=stop_token)
-            all_tokens += len(response[0][model_input.shape[1]:])
+            while not eos:
+                results = generator.iterate()
+                if results != []:
+                    result = results[0]
+                    if result["stage"] == "streaming":
+                        text = result.get("text", "").replace(r"\n", "\n")
+                        all_tokens += 1
+                        tokens += 1
+                        print(text, end="", flush=True)
+                        if vc_session:
+                            vc_response += text
+                            #end_ids = [".", "\n", "!", "?"]
+                            #end_ids = ["\n"]
+                            # end_ids = []
+                            # for end_id in end_ids:
+                            #     if end_id in vc_response:
+                            #         text += "<|eot_id|>"
+                            #         vc_response += "<|eot_id|>"
+                            find_image = re.compile(r'<-[\S\s]+>')
+                            for image in re.findall(find_image, vc_response):
+                                vc_response = vc_response.replace(image, "")
+                            if "<|eot_id|>" in vc_response:
+                                vc_response = vc_response.replace("<|eot_id|>", "")
+                                voice_queue[vc_session].append(vc_response)
+                                vc_response = ""
+                            end_ids = [".", "\n", "!", "?"]
+                            for end_id in end_ids:
+                                if end_id in vc_response:
+                                    voice_queue[vc_session].append(vc_response)
+                                    vc_response = ""
+                        response += text
+                        final_response += text
+                        if "<-" in response and character.maw and not isinstance(
+                                message.channel, discord.DMChannel):
+                            find_image = re.compile(r'<-[\S\s]+>')
+                            for image in re.findall(find_image, final_response):
+                                print("image detected")
+                                final_response = final_response.replace(image, "")
+                                image = image[2:-1]
+                                if image[-1] == "-": image = image[:-1]
+                                if image != "":
+                                    with open("../DanteMode/queue.txt", "a") as image_queue:
+                                        image_queue.write(
+                                            "\n" + str(channel.id) + "|" + str(image).replace("\n", "\\n"))
+                        if "<|eot_id|>" in response:
+                            eos = True
+                            final_response = final_response.replace("<|eot_id|>", "")
+                            response = response.replace("<|eot_id|>", "")
+                        if time.time() - limiter > 1.2:
+                            limiter = time.time()
+                            if character.maw:
+                                asyncio.run_coroutine_threadsafe(coro=message.edit(final_response[:1999]),
+                                                                 loop=client.loop)
+                            else:
+                                asyncio.run_coroutine_threadsafe(
+                                    coro=temp_edit(message.id, thread, final_response[:1999], channel.id),
+                                    loop=client.loop)
+                else:
+                    eos = True
+            if character.maw:
+                if not message.channel.id in [x.character_message.channel.id for x in
+                                              model_queue[1:]] and not current_gen.vc:
+                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, final_response[:1999]),
+                                                     loop=client.loop)
+                else:
+                    asyncio.run_coroutine_threadsafe(coro=message.edit(final_response[:1999]), loop=client.loop)
+            else:
+                if not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            coro=edit_add_hookredobutton(hook_list[channel.id], message, final_response[:1999],
+                                                         thread), loop=client.loop)
+                    except Exception as e:
+                        exc_type, exc_obj, exc_tb = sys.exc_info()
+                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                        print(exc_type, fname, exc_tb.tb_lineno)
+                        print(repr(e))
+                        pass
+                else:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            coro=edit_add_hookeditbutton(hook_list[channel.id], message, final_response[:1999],
+                                                         thread), loop=client.loop)
+                    except Exception as e:
+                        exc_type, exc_obj, exc_tb = sys.exc_info()
+                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                        print(exc_type, fname, exc_tb.tb_lineno)
+                        print(repr(e))
+                        pass
+            try:
+                for idx, i in enumerate(typing_channels):
+                    if i[0] == current_gen.character_message.channel:
+                        typing_channels.pop(idx)
+            except Exception as e:
+                print(repr(e))
             all_time += time.time() - start_time
             asyncio.run_coroutine_threadsafe(coro=client.change_presence(
                 activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(
-                    round(len(response[0][model_input.shape[1]:]) / (time.time() - start_time), 2)) + " tps | " + str(
+                    round(tokens / (time.time() - start_time), 2)) + " tps | " + str(
                     round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.idle), loop=client.loop)
-            decoded_response = tokenizer.decode(response[0][model_input.shape[1]:], skip_special_tokens=True)
             if current_gen.character.maw:
-                history.append(MawCharacterMessage(decoded_response, (str(current_gen.character_message.id) + "-" + str(
+                history.append(MawCharacterMessage(response, (str(current_gen.character_message.id) + "-" + str(
                     current_gen.character_message.channel.id)), "character"))
             else:
-                history.append(MawCharacterMessage(decoded_response, current_gen.character_message.id, "character"))
+                history.append(MawCharacterMessage(response, current_gen.character_message.id, "character"))
             current_gen.character.write_history(history)
-            del response, decoded_response, model_input
+            del response, generator, job, input_ids, result, results, model_input
             gc.collect()
             torch.cuda.empty_cache()
             model_queue.pop(0)
@@ -861,6 +1082,402 @@ async def async_watcher():
 def watcher():
     loop = asyncio.new_event_loop()
     loop.run_until_complete(async_watcher())
+
+
+class TimeStampedVoiceData:
+    def __init__(self, data, time):
+        self.data = data
+        self.time = time
+
+
+class OpusFrame:
+    def __init__(
+            self,
+            sequence: int,
+            timestamp: float,
+            received_timestamp: float,
+            ssrc: int,
+            decrypted_data: Optional[bytes],
+            decoded_data: Optional[bytes] = None,
+            user_id: Optional[int] = (None),
+    ):
+        self.sequence = sequence
+        self.timestamp = timestamp
+        self.received_timestamp = received_timestamp
+        self.ssrc = ssrc
+        self.decrypted_data = decrypted_data
+        self.decoded_data = decoded_data
+        self.user_id = user_id
+
+    @property
+    def is_silent(self):
+        return self.decrypted_data == b"\xf8\xff\xfe"
+
+    def __repr__(self) -> str:
+        attrs = (
+            ("sequence", self.sequence),
+            ("timestamp", self.timestamp),
+            ("received_timestamp", self.received_timestamp),
+            ("ssrc", self.ssrc),
+            ("user_id", self.user_id),
+        )
+        joined = " ".join("%s=%r" % t for t in attrs)
+        return f"<{self.__class__.__name__} {joined}>"
+
+
+async def async_voice_channel_listener(proto, session):
+    print("Starting channel listener")
+    try:
+        global voice_data
+        decoder = OpusDecoder()
+        decoder.set_channels(2)
+        decoder.set_sampling_frequency(48000)
+        async for data in proto.listen():
+            if 200 <= data[1] <= 204:
+                continue
+            data = bytearray(data)
+            header = data[:12]
+            data = data[12:]
+            sequence, timestamp, ssrc = unpack_from(">xxHII", header)
+            try:
+                decrypted = proto.decrypt(header, data)
+            except:
+                continue
+            opus_frame = OpusFrame(sequence, timestamp, time.perf_counter(), ssrc, decrypted)
+            user_id = proto._wait_for_user_id(ssrc)
+            try:
+                voice_data[session][user_id]
+            except:
+                try:
+                    decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
+                    voice_data[session][user_id] = array.array('B')
+                    voice_data[session][user_id].extend(decoded)
+                except:
+                    pass
+            else:
+                try:
+                    decoded = decoder.decode(opus_frame.decrypted_data).tobytes()
+                    voice_data[session][user_id].extend(decoded)
+                except:
+                    pass
+    except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
+        print(repr(e))
+        raise e
+
+
+def voice_channel_listener(proto, session):
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(async_voice_channel_listener(proto, session))
+
+
+def load_speech():
+    global speech_model
+    global speechloading
+    if not speech_model:
+        if not speechloading:
+            speechloading = True
+            try:
+                speech_model = SpeakerRunner()
+            except Exception as e:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
+                print(repr(e))
+                speech_model = None
+        else:
+            while speech_model == None:
+                time.sleep(0.1)
+
+
+def request_speech(text, s_prev):
+    global speech_model
+    while speech_model == None:
+        time.sleep(0.01)
+    try:
+        text = text + '.'
+        noise = torch.randn(1, 1, 256).to("cuda")
+        wav, s_prev = speech_model.LFinference(text, s_prev, noise, alpha=0.7, diffusion_steps=10, embedding_scale=1.8)
+        return wav, s_prev
+    except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
+        print(repr(e))
+        raise e
+
+
+def load_whisper():
+    #this is done in a new thread because it HAS to complete successfully
+    global whisper_model
+    global whisperloading
+    if not whisper_model:
+        if not whisperloading:
+            whisperloading = True
+            try:
+                whisper_model = whisper.load_model("medium.en", device='cuda')
+            except Exception as e:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
+                print(repr(e))
+                pass
+            whisperloading = False
+        else:
+            while whisper_model == None:
+                time.sleep(0.01)
+
+
+def request_whisper_text(audio):
+    global whisper_model
+    while whisper_model == None:
+        time.sleep(0.01)
+    global whispertranscribing
+    while whispertranscribing:
+        time.sleep(0.02)
+    whispertranscribing = True
+    try:
+        transcribed_text = whisper_model.transcribe(audio, fp16=True, hallucination_silence_threshold=2)
+    except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
+        print(repr(e))
+        transcribed_text = ""
+    whispertranscribing = False
+    return transcribed_text
+
+
+def user_listener(session, user, proto):
+    try:
+        global voice_data
+        global exclusive
+        print("Started user listener, adjusting audio")
+        source = BytesSRAudioSource(voice_data[session][user.id])
+        recognizer = sr.Recognizer()
+        recognizer.energy_threshold = 1200
+        recognizer.dynamic_energy_threshold = True
+        recognizer.adjust_for_ambient_noise(source)
+        dq = Queue()
+        rt = 100000.0  # There may be long periods of silence
+        pto = 3.5
+        pt = None
+        transcript = ['']
+
+        def record_callback(_, audio: sr.AudioData) -> None:
+            data = audio.get_raw_data()
+            dq.put(data)
+
+        recognizer.listen_in_background(source, record_callback, phrase_time_limit=rt)
+        asyncio.run_coroutine_threadsafe(
+            coro=session.thread.send("Finished calibrating audio for " + str(user.mention)),
+            loop=client.loop)
+        while proto.is_connected():
+            try:
+                if not dq.empty():
+                    now = datetime.datetime.now(datetime.UTC)
+                    phrase_complete = False
+                    if pt and now - pt > datetime.timedelta(seconds=pto):
+                        phrase_complete = True
+                    pt = now
+                    audio_data = b''.join(dq.queue)
+                    dq.queue.clear()
+                    print(len(audio_data))
+                    if len(audio_data) > 400:  # only transcribe if there is something to transcribe
+                        audiobytes = io.BytesIO()
+                        wave_write = wave.open(audiobytes, "wb")
+                        wave_write.setnchannels(1)
+                        wave_write.setsampwidth(2)
+                        wave_write.setframerate(48000)
+                        wave_write.writeframes(audio_data)
+                        wave_write.close()
+                        audiobytes.seek(0)
+                        audio_np = librosa.load(audiobytes, sr=16000)[0]
+                        result = request_whisper_text(audio_np)
+                        text = result['text'].strip()
+                        if phrase_complete:
+                            transcript.append(text)
+                        else:
+                            transcript[-1] = text
+                    #if "." in transcript[-1] or "?" in transcript[-1] or "!" in transcript[-1]:
+                    transcript_joined = ''.join(transcript).strip()
+                    # hallucinations
+                    hallucination_list = ["Thank you.", "thank you.", "You're welcome.", "Thanks for watching!",
+                                          "Please subscribe to my channel.", "See you next time.",
+                                          "Thank you for watching!", "I'm sorry."]
+                    for hallucination in hallucination_list:
+                        transcript_joined = transcript_joined.replace(hallucination, "")
+                    transcript_joined = transcript_joined.strip()
+                    if transcript_joined != '' and transcript_joined != 'you':
+                        hook = asyncio.run_coroutine_threadsafe(coro=get_webhook(session.thread.parent),
+                                                                loop=client.loop).result()
+                        if not exclusive[session]:
+                            print("Session isn't exclusive")
+                            if "." in transcript_joined or "?" in transcript_joined or "!" in transcript_joined:
+                                print("Found prompt in text")
+                                # I could simply use on_message, but it's easier, faster, to handle it here.
+                                # Threading this unfortunately won't help, since this is client loop bound.
+                                user_hook_message = asyncio.run_coroutine_threadsafe(
+                                    coro=hook.send(content=transcript_joined, username=str(user.display_name),
+                                                   avatar_url=user.display_avatar.url, thread=session.thread,
+                                                   wait=True), loop=client.loop).result()
+                                maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
+                                                                               loop=client.loop).result()
+                                relative_path = "./servers/" + str(session.guild.id)
+                                if os.path.isdir(relative_path):
+                                    config = read_config(relative_path)
+                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
+                                    character = MawCharacter("Maw", config, True)
+                                else:
+                                    system_prompt = regular_system_prompt
+                                    config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
+                                                                relative_path + "/history.txt", "Maw", None, 0, 0)
+                                    make_maw_character(relative_path, config)
+                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
+                                    character = MawCharacter("Maw", config, True)
+                                user_message = MawCharacterMessage(
+                                    content=str(user.display_name) + " said: " + transcript_joined,
+                                    message_id=str(user_hook_message.id), role="user")
+                                model_queue.append(
+                                    CharacterGen(character_message=maw_message, local_character=character,
+                                                 thread=session.thread,
+                                                 user_message=user_message, vc=session))
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                coro=hook.send(content=transcript_joined, username=str(user.display_name),
+                                               avatar_url=user.display_avatar.url, thread=session.thread),
+                                loop=client.loop)
+                        transcript = ['']
+                        pass
+                else:
+                    time.sleep(0.01)
+            except Exception as e:
+                print(repr(e))
+    except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
+        print(repr(e))
+
+
+def play_queue(proto, session):
+    global voice_play
+    while True:
+        try:
+            queue = voice_play[session]
+            while queue == []:
+                time.sleep(0.01)
+            for idx, speech in enumerate(queue):
+                print("speaking")
+                sourcebytes = io.BytesIO(speech)
+                source = discord.FFmpegPCMAudio(sourcebytes, pipe=True, options='-vn')  # , bitrate=128
+                try:
+                    proto.play(source)
+                except Exception as e:
+                    # if we are disconnected, this wont work
+                    pass
+                while proto.is_playing():
+                    time.sleep(0.01)
+                queue.pop(idx)
+        except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            print(exc_type, fname, exc_tb.tb_lineno)
+            print(repr(e))
+
+
+def voice_channel_watcher(session):
+    guild = session.guild
+    message = session.message
+    thread = session.thread
+    proto = session.proto
+    global voice_data
+    global voice_queue
+    global voice_play
+    voice_data[session] = {}
+    voice_queue[session] = []
+    voice_play[session] = []
+    threading.Thread(target=play_queue, args=[proto, session]).start()
+    print("Started watcher")
+    threading.Thread(target=voice_channel_listener, args=[proto, session]).start()
+    user_threads = {}
+    print("Got to scalable connections state")
+    while proto.is_connected():
+        for user_id in voice_data[session].keys():
+            if user_id not in user_threads.keys():
+                print(user_id)
+                user = client.get_user(user_id)
+                print(user)
+                user_threads[user_id] = threading.Thread(target=user_listener, args=[session, user, proto])
+                user_threads[user_id].start()
+        for idx, data in enumerate(voice_queue[session]):
+            s_prev = None
+            print("Making sentence:", data)
+            try:
+                wavs = []
+                for sentence in data.split("."):
+                    new_audio, s_prev = request_speech(sentence, s_prev)
+                    wavs.append(new_audio)
+                play_audio = np.concatenate(wavs)
+                print(play_audio)
+                with io.BytesIO() as play_bytes:
+                    empty_torch = [0.0] * 12000  # so it doesn't cut off
+                    play_audio = play_audio * 2
+                    play_audio = np.concatenate((play_audio, empty_torch))
+                    scipy.io.wavfile.write(play_bytes, rate=24000, data=play_audio)
+                    play_bytes.seek(0)
+                    voice_play[session].append(play_bytes.read())
+                voice_queue[session].pop(idx)
+            except Exception as e:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
+                print(repr(e))
+                voice_queue[session].pop(idx)
+        time.sleep(0.01)
+    print("No longer connected")
+    del voice_data[session]
+    global exclusive
+    del exclusive[session]
+    global maw_voice_channels
+    for idx, x in enumerate(maw_voice_channels):
+        if x == session:
+            maw_voice_channels.pop(idx)
+    global stay_allocated
+    stay_allocated -= 1
+    global whisperusers
+    whisperusers -= 1
+    if whisperusers == 0:
+        global whisper_model
+        whisper_model = None
+        global speech_model
+        speech_model = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        global whisperloading
+        whisperloading = False
+        global speechloading
+        speechloading = False
+
+
+def typing_watcher():
+    global typing_channels
+    while True:
+        for idx, i in enumerate(typing_channels):
+            if i[1] < time.time() - 8:
+                if isinstance(i[0], discord.CategoryChannel):
+                    continue
+                if isinstance(i[0], discord.ForumChannel):
+                    continue
+                if isinstance(i[0], discord.StageChannel):
+                    continue
+                asyncio.run_coroutine_threadsafe(
+                    coro=i[0].trigger_typing(),
+                    loop=client.loop)
+                typing_channels[idx][1] = time.time()
+        time.sleep(0.01)
 
 
 @client.event
@@ -881,6 +1498,7 @@ async def on_message(message):
     global second_last_message
     global last_message
     global watched_avatars
+    global maw_voice_channels
     maw_response = False
     character_response = False
     dm = False
@@ -890,7 +1508,7 @@ async def on_message(message):
             if last_message[message.channel.id].author.id == client.user.id and second_last_message[
                 message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
                 maw_response = True
-        except:
+        except Exception as e:
             pass
     if isinstance(message.channel, discord.Thread):
         if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
@@ -903,13 +1521,15 @@ async def on_message(message):
                 if last_message[message.channel.id].author.id == client.user.id and second_last_message[
                     message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
                     maw_response = True
-            except:
+            except Exception as e:
                 pass
     if isinstance(message.channel, discord.DMChannel):
         maw_response = True
         dm = True
     if message.author.bot:
         character_response = False
+        maw_response = False
+    if message.channel in [x.thread for x in maw_voice_channels]:
         maw_response = False
     try:
         second_last_message[message.channel.id] = last_message[message.channel.id]
@@ -964,10 +1584,10 @@ async def on_message(message):
                     pass
         else:
             if isinstance(message.channel, discord.DMChannel):
-                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. You are talking to " + (
+                system_prompt = dm_system_prompt + (
                     message.author.global_name if message.author.global_name else message.author.name)
             else:
-                system_prompt = "You are Maw, an intelligence model that answers questions to the best of your knowledge. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in the message. You can also make images. To do so, enclose a description of the image in '<-' and '->', like this: <-prompt->. Do not make ASCII art or just describe the image without enclosing it unless specifically stated. Do not make images unless asked. To ping users, enclose either their name or ID in '|+' and '|', like this: |+Edna|. Do not extend the users name, use the exact name you are given. You are talking in a server named "
+                system_prompt = regular_system_prompt
             config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
                                         relative_path + "/history.txt", "Maw", None, 0, 0)
             make_maw_character(relative_path, config)
@@ -980,8 +1600,9 @@ async def on_message(message):
         user_message = MawCharacterMessage(content=(
                                                        message.author.global_name if message.author.global_name else message.author.name) + " said: " + message.content.strip(),
                                            message_id=str(message.id), role="user")
-        model_queue.append(CharacterGen(character_message=maw_message, character=character, thread=message.channel,
-                                        user_message=user_message))
+        model_queue.append(
+            CharacterGen(character_message=maw_message, local_character=character, thread=message.channel,
+                         user_message=user_message, vc=False))
         try:
             if isinstance(message.channel, discord.DMChannel):
                 old_message = await message.channel.fetch_message(old_message_id[0])
@@ -990,7 +1611,7 @@ async def on_message(message):
                 if old_message_id:
                     channel = client.get_channel(old_message_id[1])
                     old_message = await channel.fetch_message(old_message_id[0])
-                await old_message.edit(old_message.content, view=None)
+                    await old_message.edit(old_message.content, view=None)
         except:
             pass
     if character_response:
@@ -1016,8 +1637,8 @@ async def on_message(message):
             #character.write_history(history) # if message is edited or deleted during generation, it needs to be reflected
             user_message = MawCharacterMessage(content=message.content, message_id=str(message.id), role="user")
             model_queue.append(
-                CharacterGen(character_message=character_message, character=character, thread=message.channel,
-                             user_message=user_message))
+                CharacterGen(character_message=character_message, local_character=character, thread=message.channel,
+                             user_message=user_message, vc=False))
             if old_message_id:
                 try:
                     await hook.edit_message(message_id=old_message_id, view=EditMessageButton(), thread=message.channel)
@@ -1077,6 +1698,43 @@ async def on_raw_message_delete(payload):
                 await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButton())
 
 
+@client.event
+async def on_voice_state_update(member, before, after):
+    if member.bot:
+        return
+    if not after.channel:
+        return
+    voice_file = open("voice_watch.txt", "r")
+    voice_file_lines = voice_file.readlines()
+    voice_file.close()
+    watched = [int(i.split("-")[0][:-1]) if i[:-1] == "\n" else int(i.split("-")[0]) for i in voice_file_lines]
+    if after.channel.id in watched:
+        text_channel = None
+        for idx, x in enumerate(watched):
+            if x == after.channel.id:
+                text_channel = int(voice_file_lines[idx].split("-")[1])
+        if after.channel.members != []:
+            global maw_voice_channels
+            if not member.guild in [x.guild for x in maw_voice_channels] and text_channel != None:
+                try:
+                    proto = await after.channel.connect(cls=VoiceRecvClient)
+                    channel = await client.fetch_channel(text_channel)
+                    sent_message = await channel.send(
+                        "Starting a voice session in " + str(channel.name))
+                    thread = await sent_message.create_thread(name="Maw Voice Session")
+                    session = MawVoiceSession(guild=member.guild, message=sent_message, thread=thread, proto=proto)
+                    await sent_message.edit(view=VoiceTranscribe(session=session))
+                    global exclusive
+                    exclusive[session] = True
+                    maw_voice_channels.append(session)
+                    threading.Thread(target=await_voice_allocation, args=[session]).start()
+                except Exception as e:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    print(exc_type, fname, exc_tb.tb_lineno)
+                    print(repr(e))
+
+
 @client.slash_command(description="Sends a form to make a character", dm_permission=False)
 async def character(
         interaction: discord.Interaction,
@@ -1114,5 +1772,136 @@ async def reset(
         await interaction.response.send_message("No context found to clear.")
 
 
+async def async_await_voice_allocation(session):
+    #don't hold up the client thread waiting for allocation
+    threading.Thread(target=voice_channel_watcher, args=[session]).start()
+    vram.allocate("Maw")
+    global stay_allocated
+    stay_allocated += 1
+    alloc_message = None
+    async for i in vram.wait_for_allocation("Maw"):
+        if alloc_message == None:
+            alloc_message = asyncio.run_coroutine_threadsafe(
+                coro=session.thread.send("Waiting for " + str(
+                    i) + " before starting\n(Audio spoken during this time will still be transcribed)"),
+                loop=client.loop).result()
+        else:
+            alloc_message = asyncio.run_coroutine_threadsafe(
+                coro=alloc_message.edit("Waiting for " + str(
+                    i) + " before starting\n(Audio spoken during this time will still be transcribed)"),
+                loop=client.loop)
+    if alloc_message != None:
+        alloc_message = asyncio.run_coroutine_threadsafe(
+            coro=alloc_message.edit("Loading models..."),
+            loop=client.loop).result()
+    #if not transcribe_only:
+    # This thread must occur first otherwise whisper freaks out (I think?)
+    # Is definitely an issue in MawChat
+    #speech_thread = threading.Thread(target=load_speech)
+    #speech_thread.start()
+    # quick switching + allocation means there's not much reason not to keep the speech model loaded
+    speech_thread = threading.Thread(target=load_speech)
+    speech_thread.start()
+    threading.Thread(target=load_whisper).start()
+    global whisperusers
+    whisperusers += 1
+
+
+def await_voice_allocation(session):
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(async_await_voice_allocation(session))
+
+
+@client.slash_command(dm_permission=False)
+async def voice(
+        interaction: discord.Interaction,
+):
+    pass
+
+
+@voice.subcommand(description="Maw for voice channels")
+async def join(
+        interaction: discord.Interaction,
+        channel: discord.VoiceChannel,
+        transcribe_only: Optional[bool] = discord.SlashOption(
+            name="transcribe_only",
+            required=False,
+            description="Whether or not Maw responds to what you ask.",
+        ),
+):
+    global maw_voice_channels
+    if not transcribe_only: transcribe_only = False
+    if not interaction.guild in [x.guild for x in maw_voice_channels]:
+        try:
+            proto = await channel.connect(cls=VoiceRecvClient)
+            sent_message = await interaction.response.send_message("Starting a voice session in " + str(channel.name))
+            sent_message = await sent_message.fetch()
+            thread = await sent_message.create_thread(name="Maw Voice Session")
+            session = MawVoiceSession(guild=interaction.guild, message=sent_message, thread=thread, proto=proto)
+            if transcribe_only:
+                await sent_message.edit(view=VoiceTranscribe(session=session))
+            else:
+                await sent_message.edit(view=VoiceResponse(session=session))
+            global exclusive
+            exclusive[session] = transcribe_only
+            maw_voice_channels.append(session)
+            threading.Thread(target=await_voice_allocation, args=[session]).start()
+        except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            print(exc_type, fname, exc_tb.tb_lineno)
+            print(repr(e))
+            await interaction.response.send_message("Failed to connect to that channel!")
+    else:
+        await interaction.response.send_message("Already connected to a channel in this server!")
+
+
+@voice.subcommand(description="Enlist a voice channel to auto-start transcription sessions.")
+async def enlist(
+        interaction: discord.Interaction,
+        channel: discord.VoiceChannel,
+):
+    try:
+        voice_file = open("voice_watch.txt", "r")
+        voice_file_lines = voice_file.readlines()
+        for voice_channel in voice_file_lines:
+            if voice_channel.split("-")[0] == str(channel.id):
+                await interaction.response.send_message("This channel is already enlisted for auto-transcriptions!")
+                return
+        voice_file = open("voice_watch.txt", "a")
+        voice_file.write(str(channel.id) + "-" + str(interaction.channel.id) + "\n")
+        voice_file.close()
+        await interaction.response.send_message("Enlisted this channel to auto-transcriptions.")
+    except:
+        await interaction.response.send_message("Failed to enlist!")
+
+
+@voice.subcommand(description="Enlist a voice channel to auto-start transcription sessions.")
+async def delist(
+        interaction: discord.Interaction,
+        channel: discord.VoiceChannel,
+):
+    try:
+        voice_file = open("voice_watch.txt", "r")
+        voice_file_lines = voice_file.readlines()
+        channel_found = False
+        for voice_channel in voice_file_lines:
+            if voice_channel.split("-")[0] == str(channel.id):
+                channel_found = True
+                break
+        if channel_found:
+            voice_file = open("voice_watch.txt", "w")
+            for line in voice_file_lines:
+                if line.split("-")[0] != str(channel.id):
+                    voice_file.write(line)
+            voice_file.close()
+            await interaction.response.send_message("Delisted this channel.")
+        else:
+            await interaction.response.send_message("This channel is not enlisted!")
+    except:
+        await interaction.response.send_message("Failed to delist!")
+
+
 threading.Thread(target=watcher).start()
+threading.Thread(target=typing_watcher).start()
 client.run(TOKEN)

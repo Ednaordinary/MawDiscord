@@ -5,7 +5,6 @@ import re
 import sys
 import nextcord as discord
 from dotenv import load_dotenv
-#from transformers import AutoModelForCausalLM, TextIteratorStreamer, AutoTokenizer, HqqConfig
 from vllm import LLM, SamplingParams
 import time
 import torch
