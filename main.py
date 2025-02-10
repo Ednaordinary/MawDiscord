@@ -15,7 +15,7 @@ import scipy
 from recorder import VoiceRecvClient, BytesSRAudioSource
 from dotenv import load_dotenv
 from transformers import AutoTokenizer
-from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Cache_Q8, ExLlamaV2Tokenizer
+from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Cache_Q4, ExLlamaV2Tokenizer
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, ExLlamaV2Sampler, \
     ExLlamaV2DynamicJobAsync, ExLlamaV2DynamicGeneratorAsync
 import time
@@ -48,6 +48,7 @@ watched_avatars = []
 voice_data = {}
 voice_queue = {}
 voice_play = {}
+voice_opt = {}
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.all()
@@ -70,6 +71,8 @@ maw_voice_channels = []
 maw_auto_servers = []  # EXPERIMENTAL
 maw_auto_watched = {}
 maw_auto_sample = {}
+thought_retainer = {}
+
 os.environ["OMP_NUM_THREADS"] = "16"
 os.environ["TOKENIZERS_PARALLELISM"] = "1"
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -79,202 +82,6 @@ torch.backends.cudnn.allow_tf32 = True
 
 dm_system_prompt = "You are Maw, an empathetic intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in each message. You are also capable of emulating emotions and opinions about topics. You are talking to "
 regular_system_prompt = "\nYou are Maw, an empathetic intelligence model that answers questions to the best of your knowledge. Depending on the questions you are asked, you can either go into detail or be brief with your explanations. If the user asks a coding question, use standard markdown formatting for code. Do not refuse to answer questions. You may also be referred to as Mode Assistance. You were developed by Mode LLC, a company founded by Edna. The name of the user you are talking to is included in each message. You are also capable of emulating emotions and opinions about topics.\n\nYou are able to generate or create images by making a generation prompt: enclose a description of an image in <- and ->, for example: <-A hot dog on a grill, the grill sits on a wooden table with condiments on it->. Do not generate an image unless explicitly asked to do so.\nIf asked to generate an image, add a short description or acknowledgement before you add the generation prompt.\n\nSometimes, past history may be included in the prompt. Please only respond to the latest message, which while be clearly marked. Past history is meant to provide you with context, and may or may not be needed.\n\nYou are talking in a server named "
-
-
-# Infer Requests are currently unused, meant for a future version of maw
-
-class CharacterInferRequest:
-    def __init__(self, character_message, character, thread, user_message, start):
-        self.character_message = character_message
-        self.character = character
-        self.thread = thread
-        self.user_message = user_message
-        self.start = start
-
-    async def infer(self):
-        global all_time
-        history = self.character.read_history()
-        model_input, local_token_count = history_to_llama(history, self.character.config, self.start, 126000,
-                                                          self.character.maw)
-        if self.user_message != None:
-            history.append(self.user_message)
-            self.character.write_history(history)
-        global all_tokens
-        print(model_input)
-        torch.manual_seed(randint(1, 10000000))
-        start_time = time.time()
-
-        async def run_job(idx):
-            global generator
-            print("running job", idx)
-            temp = randint(550, 750) / 1000
-            sampler = ExLlamaV2Sampler.Settings(top_p=0.95, top_k=0, min_p=0.07, temperature=temp,
-                                                token_repetition_penalty=1.02, dry_base=1.75, dry_multiplier=0.7,
-                                                dry_allowed_length=2)
-            limiter = time.time()
-            completion = ""
-            tokens = 0
-            print("submitting to generator")
-            print(generator)
-            job = ExLlamaV2DynamicJobAsync(
-                generator,
-                input_ids=model_input,
-                max_new_tokens=700,
-                token_healing=True,
-                gen_settings=sampler,
-                decode_special_tokens=True,
-                seed=randint(1, 10000000),
-            )
-            async for result in job:
-                global all_tokens
-                all_tokens += 1
-                tokens += 1
-                completion += result.get("text", "")
-                print(result.get("text", ""), end='')
-                # Still need to add an actual check that dante is in the channel
-                if self.character.maw and not isinstance(self.character_message.channel, discord.DMChannel):
-                    find_image = re.compile(r'<-[\S\s]+>')
-                    for image in re.findall(find_image, completion):
-                        completion = completion.replace(image, "")
-                        image = image[2:-1]
-                        if image[-1] == "-": image = image[:-1]
-                        if image != "":
-                            with open("../DanteMode/queue.txt", "a") as image_queue:
-                                image_queue.write(
-                                    "\n" + str(self.character_message.channel.id) + "|" + str(image).replace("\n",
-                                                                                                             "\\n"))
-                if "<|eot_id|>" in completion:
-                    await job.cancel()
-                    completion.replace("<|eot_id|>", "")
-                if time.time() - limiter > 1.0 and idx == 0:
-                    limiter = time.time()
-                    if character.maw:
-                        asyncio.run_coroutine_threadsafe(coro=self.character_message.edit(completion[:1999]),
-                                                         loop=client.loop)
-                    else:
-                        asyncio.run_coroutine_threadsafe(
-                            coro=hook_list[self.character_message.channel.parent.id].edit_message(
-                                message_id=self.character_message.id,
-                                content=completion[:1999],
-                                thread=self.character_message.channel.id),
-                            loop=client.loop)
-            print("Done response, returning")
-            return completion, tokens
-
-        tasks = [run_job(i) for i in range(10)]
-        print("gathering tasks")
-        outputs = await asyncio.gather(*tasks)
-        print("done gathering tasks")
-        all_out = []
-        tokens = 0
-        for output, token_count in outputs:
-            tokens += token_count
-            all_out.append(output)
-        all_time += time.time() - start_time
-        # add swipe messages here
-        asyncio.run_coroutine_threadsafe(coro=client.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(
-                round(tokens / (time.time() - start_time), 2)) + " tps | " + str(
-                round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.online), loop=client.loop)
-        if self.character.maw:
-            history.append(MawCharacterMessage(all_out[0], (str(self.character_message.id) + "-" + str(
-                self.character_message.channel.id)), "character"))
-        else:
-            history.append(MawCharacterMessage(all_out[0], self.character_message.id, "character"))
-        gc.collect()
-        torch.cuda.empty_cache()
-
-
-class VCInferRequest:
-    def __init__(self, character_message, character, thread, user_message, session):
-        self.character_message = character_message
-        self.character = character
-        self.thread = thread
-        self.user_message = user_message
-        self.session = session
-    # async def infer(self):
-    #     global all_time
-    #     history = self.character.read_history()
-    #     model_input, local_token_count = history_to_llama(history, self.character.config, "")
-    #     if self.user_message != None:
-    #         history.append(self.user_message)
-    #         self.character.write_history(history)
-    #         global all_tokens
-    #         print(model_input)
-    #         torch.manual_seed(randint(1, 10000000))
-    #         start_time = time.time()
-    #         async def run_job(idx):
-    #             global generator
-    #             temp = randint(550, 750) / 1000
-    #             sampler = ExLlamaV2Sampler.Settings(top_p=0.95, top_k=0, min_p=0.07, temperature=temp,
-    #                                                 token_repetition_penalty=1.02, dry_base=1.75, dry_multiplier=0.7,
-    #                                                 dry_allowed_length=2)
-    #             print(generator)
-    #             job = ExLlamaV2DynamicJobAsync(
-    #                 generator,
-    #                 input_ids=model_input,
-    #                 max_new_tokens=700,
-    #                 token_healing=True,
-    #                 gen_settings=sampler,
-    #                 decode_special_tokens=True,
-    #                 seed=randint(1, 10000000),
-    #             )
-    #             limiter = time.time()
-    #             completion = ""
-    #             tokens = 0
-    #             async for result in job:
-    #                 global all_tokens
-    #                 all_tokens += 1
-    #                 tokens += 1
-    #                 completion += result.get("text", "")
-    #                 # Still need to add an actual check that dante is in the channel
-    #                 if self.character.maw and not isinstance(self.character_message.channel, discord.DMChannel):
-    #                     find_image = re.compile(r'<-[\S\s]+>')
-    #                     for image in re.findall(find_image, completion):
-    #                         completion = completion.replace(image, "")
-    #                         image = image[2:-1]
-    #                         if image[-1] == "-": image = image[:-1]
-    #                         if image != "":
-    #                             with open("../DanteMode/queue.txt", "a") as image_queue:
-    #                                 image_queue.write(
-    #                                     "\n" + str(self.character_message.channel.id) + "|" + str(image).replace("\n", "\\n"))
-    #                 if "<|eot_id|>" in completion:
-    #                     await job.cancel()
-    #                     completion.replace("<|eot_id|>", "")
-    #                     voice_queue[self.session].append(completion)
-    #                 if time.time() - limiter > 1.0 and idx == 0:
-    #                     limiter = time.time()
-    #                     asyncio.run_coroutine_threadsafe(
-    #                         coro=hook_list[self.character_message.channel.parent.id].edit_message(message_id=self.character_message.id,
-    #                                                                            content=completion[:1999],
-    #                                                                            thread=self.character_message.channel.id),
-    #                         loop=client.loop)
-    #             return completion, tokens
-    #         tasks = [run_job(i) for i in range(1)]
-    #         outputs = await asyncio.gather(*tasks)
-    #         all_out = []
-    #         tokens = 0
-    #         for output, token_count in outputs:
-    #             tokens += token_count
-    #             all_out.append(output)
-    #         all_time += time.time() - start_time
-    #         # no swipe messages for this one
-    #         asyncio.run_coroutine_threadsafe(coro=client.change_presence(
-    #             activity=discord.Activity(type=discord.ActivityType.watching, name="at " + str(
-    #                 round(tokens / (time.time() - start_time), 2)) + " tps | " + str(
-    #                 round(all_tokens / all_time, 2)) + " avg tps"), status=discord.Status.online), loop=client.loop)
-    #         history.append(MawCharacterMessage(all_out[0], (str(self.character_message.id) + "-" + str(
-    #             self.character_message.channel.id)), "character"))
-    #         gc.collect()
-    #         torch.cuda.empty_cache()
-
-
-class EmptyInfer:
-    def __init__(self):
-        pass
-
-    async def infer(self, generator):
-        pass
 
 
 # this class is only used by characters
@@ -389,6 +196,9 @@ class CharacterModal(discord.ui.Modal):
                 else:
                     hook_message = await webhook.send(content=self.first_message.value, username=self.name.value,
                                                       wait=True, thread=thread, view=EditMessageButton())
+                if hasattr(hook_message, "id") and hook_message.id != None:
+                    global thought_retainer
+                    thought_retainer[hook_message.id] = []
                 history = [MawCharacterMessage(self.first_message.value, hook_message.id, "character")]
             if history:
                 local_character.write_history(history)
@@ -396,13 +206,14 @@ class CharacterModal(discord.ui.Modal):
 
 # this class is only used by characters
 class EditMessageModal(discord.ui.Modal):
-    def __init__(self, original_content, local_character):
+    def __init__(self, original_content, local_character, thinks):
         super().__init__(
             title="Edit Message",
             timeout=60 * 60 * 24,  # 1 day
         )
         self.original_content = original_content
         self.character = local_character
+        self.thinks = thinks
         self.content = discord.ui.TextInput(
             label="Message",
             style=discord.TextInputStyle.paragraph,
@@ -426,10 +237,19 @@ class EditMessageModal(discord.ui.Modal):
             self.character.write_history(history)
             if this_message[0] == len(
                     history) - 1 and not idx == 0:  # if this is the latest message but not the first message, add a redo button
+                # Behaviour is currently to strip thinking if the message is edited, so the view should retain that.
+                #if self.thinks != []:
+                #    view = EditAndRedoMessageButtonThink(thinks=self.thinks)
+                #else:
                 view = EditAndRedoMessageButton()
             else:
+                #if self.thinks != []:
+                #    view = EditMessageButtonThink(thinks=self.thinks)
+                #else:
                 view = EditMessageButton()
             await interaction.response.edit_message(content=self.content.value, view=view)
+            global thought_retainer
+            thought_retainer[interaction.message.id] = []
 
 
 # this class is only used by characters
@@ -643,6 +463,7 @@ class RootMessageActionsUnlocked(discord.ui.View):
 class RedoMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
+        self.thinks = []
 
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary) # , custom_id="maw-redo"
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -666,9 +487,12 @@ class RedoMessageButton(discord.ui.View):
             model_queue.append(
                 CharacterGen(character_message=interaction.message, local_character=local_character,
                              thread=interaction.channel,
-                             user_message=None, vc=False))
+                             user_message=None, vc=False, start="<think>"))
         else:
-            await interaction.response.edit_message(view=None)
+            if hasattr(self, "thinks") and self.thinks != []:
+                await interaction.response.edit_message(view=ThinkButton(self.thinks))
+            else:
+                await interaction.response.edit_message(view=None)
 
     @discord.ui.button(label="End", style=discord.ButtonStyle.red, custom_id="maw-end")
     async def end_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -679,12 +503,20 @@ class RedoMessageButton(discord.ui.View):
         button.disabled = True
         await interaction.response.edit_message(view=self)
 
+class RedoMessageButtonThink(RedoMessageButton):
+    def __init__(self, *, timeout=None, thinks=[]):
+        super().__init__(timeout=timeout)
+        self.thinks = thinks
+    @discord.ui.button(label="💭")
+    async def think_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_message(content="\n".join(self.thinks)[:1999], ephemeral=True)
+
 
 # this class is only used by characters
 class EditAndRedoMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
-
+        self.thinks = []
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, custom_id="edit-edit-and-redo-message")
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         config = read_config("./characters/" + str(interaction.guild.id) + "/" + str(interaction.message.channel.id))
@@ -692,7 +524,7 @@ class EditAndRedoMessageButton(discord.ui.View):
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character))
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character, self.thinks))
 
     @discord.ui.button(label="Redo", style=discord.ButtonStyle.primary) #  custom_id="redo-edit-and-redo-message"
     async def redo_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -716,7 +548,7 @@ class EditAndRedoMessageButton(discord.ui.View):
                 model_queue.append(
                     CharacterGen(character_message=interaction.message, local_character=local_character,
                                  thread=interaction.channel,
-                                 user_message=None, vc=False))
+                                 user_message=None, vc=False, start="<think>\n\nAlright, so I'm trying to respond as"))
             else:
                 print(int(history[-1].message_id.split("-")[0]), interaction.message.id)
                 await interaction.response.edit_message(view=None)
@@ -733,7 +565,7 @@ class EditAndRedoMessageButton(discord.ui.View):
                     child.disabled = True
                 except:
                     pass
-            await interaction.response.send_modal(RedoStartMessageModal(interaction.message.content, local_character, self))
+            await interaction.response.send_modal(RedoStartMessageModal(interaction.message.content[:1000], local_character, self))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.red, custom_id="delete-edit-and-redo-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -759,11 +591,19 @@ class EditAndRedoMessageButton(discord.ui.View):
                 hook = hook_list[interaction.channel.parent.id]
                 await hook.delete_message(interaction.message.id)
 
+class EditAndRedoMessageButtonThink(EditAndRedoMessageButton):
+    def __init__(self, *, timeout=None, thinks=[]):
+        super().__init__(timeout=timeout)
+        self.thinks = thinks
+    @discord.ui.button(label="💭")
+    async def think_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_message(content="\n".join(self.thinks)[:1999], ephemeral=True)
 
 # this class is only used by characters
 class EditMessageButton(discord.ui.View):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
+        self.thinks = []
 
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, custom_id="edit-edit-message")
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -772,7 +612,7 @@ class EditMessageButton(discord.ui.View):
         if config.locked_id != 0 and config.locked_id != interaction.user.id:
             await interaction.response.pong()
         else:
-            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character))
+            await interaction.response.send_modal(EditMessageModal(interaction.message.content, local_character, self.thinks))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.red, custom_id="delete-edit-message")
     async def delete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -798,6 +638,23 @@ class EditMessageButton(discord.ui.View):
                 hook = hook_list[interaction.channel.parent.id]
                 await hook.delete_message(interaction.message.id)
 
+# this class is only used by characters
+class EditMessageButtonThink(EditMessageButton):
+    def __init__(self, *, timeout=None, thinks=[]):
+        super().__init__(timeout=timeout)
+        self.thinks = thinks
+    @discord.ui.button(label="💭")
+    async def think_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_message(content="\n".join(self.thinks)[:1999], ephemeral=True)
+
+# this class is only used by maw
+class ThinkButton(discord.ui.View):
+    def __init__(self, *, timeout=None, thinks=[]):
+        super().__init__(timeout=timeout)
+        self.thinks = thinks
+    @discord.ui.button(label="💭")
+    async def think_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_message(content="\n".join(self.thinks)[:1999], ephemeral=True)
 
 # this class is only used by maw
 class ResetContextButton(discord.ui.View):
@@ -847,6 +704,18 @@ class VoiceResponse(discord.ui.View):
             await interaction.message.thread.send("Switched to transcribe-only mode")
         await interaction.response.edit_message(view=VoiceTranscribe(session=self.session))
 
+    @discord.ui.button(label="Opt")
+    async def opt_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global voice_opt
+        if interaction.user in voice_opt[self.session]:
+            voice_opt[self.session].remove(interaction.user)
+            if interaction.message.thread != None:
+                await interaction.message.thread.send((interaction.user.global_name if interaction.user.global_name else interaction.user.name) + " opted in to transcription")
+        else:
+            voice_opt[self.session].append(interaction.user)
+            if interaction.message.thread != None:
+                await interaction.message.thread.send((interaction.user.global_name if interaction.user.global_name else interaction.user.name) + " opted out of transcription")
+        await interaction.response.pong()
 
 # this class is used during maw voice sessions
 class VoiceTranscribe(discord.ui.View):
@@ -871,6 +740,19 @@ class VoiceTranscribe(discord.ui.View):
         if interaction.message.thread != None:
             await interaction.message.thread.send("Switched to response mode")
         await interaction.response.edit_message(view=VoiceResponse(session=self.session))
+    
+    @discord.ui.button(label="Opt")
+    async def opt_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        global voice_opt
+        if interaction.user in voice_opt[self.session]:
+            voice_opt[self.session].remove(interaction.user)
+            if interaction.message.thread != None:
+                await interaction.message.thread.send((interaction.user.global_name if interaction.user.global_name else interaction.user.name) + " opted in to transcription")
+        else:
+            voice_opt[self.session].append(interaction.user)
+            if interaction.message.thread != None:
+                await interaction.message.thread.send((interaction.user.global_name if interaction.user.global_name else interaction.user.name) + " opted out of transcription")
+        await interaction.response.pong()
 
 
 class MawCharacterMessage:
@@ -924,7 +806,7 @@ class MawCharacter:
 
 
 class CharacterGen:
-    def __init__(self, character_message, local_character, thread, user_message, vc, start="", auto=False):
+    def __init__(self, character_message, local_character, thread, user_message, vc, start="<think>", auto=False):
         self.character_message = character_message
         self.character = local_character
         self.thread = thread
@@ -994,7 +876,7 @@ class GroupedMessage:
 
 def history_to_llama_auto(history, config, start, cutoff, maw):
     tokenizer = AutoTokenizer.from_pretrained(
-        "mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
     )
     llama = []
     token_length = 0
@@ -1064,7 +946,7 @@ def history_to_llama_auto(history, config, start, cutoff, maw):
 def history_to_llama(history, config, start, cutoff, maw):
     print(cutoff)
     tokenizer = AutoTokenizer.from_pretrained(
-        "mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
     )
     llama = []
     token_length = 0
@@ -1128,7 +1010,6 @@ def history_to_llama(history, config, start, cutoff, maw):
     print("tokens:", token_length)
     # llama = str([tokenizer.decode(x, skip_special_tokens=False) for x in llama])
     decoded = tokenizer.batch_decode(llama, skip_special_tokens=False)[0].replace(r"\n", "\n")
-    print(decoded)
     llama = tokenizer.encode(decoded,
                              add_special_tokens=False, return_tensors='pt')
     # llama = "".join(llama)
@@ -1136,20 +1017,43 @@ def history_to_llama(history, config, start, cutoff, maw):
     return llama, token_length
 
 
-async def edit_add_redobutton(message, content):
+async def edit_add_redobutton(message, content, thinks):
     # views cannot be crafted outside of an event loop
-    await message.edit(content, view=RedoMessageButton())
+    try:
+        global thought_retainer
+        if "".join(thinks).strip() != "":
+            await message.edit(content, view=RedoMessageButtonThink(thinks=thinks))
+            thought_retainer[message.id] = thinks
+        else:
+            await message.edit(content, view=RedoMessageButton())
+            thought_retainer[message.id] = []
+    except Exception as e:
+        print(repr(e))
 
 
-async def edit_add_hookredobutton(hook, message, content, thread):
+async def edit_add_hookredobutton(hook, message, content, thread, thinks):
     # views cannot be crafted outside of an event loop
-    await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditAndRedoMessageButton())
+    try:
+        global thought_retainer
+        if "".join(thinks).strip() != "":
+            await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditAndRedoMessageButtonThink(thinks=thinks))
+            thought_retainer[message.id] = thinks
+        else:
+            await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditAndRedoMessageButton())
+            thought_retainer[message.id] = []
+    except Exception as e:
+        print(repr(e))
 
 
-async def edit_add_hookeditbutton(hook, message, content, thread):
+async def edit_add_hookeditbutton(hook, message, content, thread, thinks):
     # views cannot be crafted outside of an event loop
-    await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditMessageButton())
-
+    if "".join(thinks).strip() != "":
+        global thought_retainer
+        await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditMessageButtonThink(thinks=thinks))
+        thought_retainer[message.id] = thinks
+    else:
+        await hook.edit_message(content=content, message_id=message.id, thread=thread, view=EditMessageButton())
+        thought_retainer[message.id] = []
 
 async def get_webhook(channel) -> discord.Webhook:
     # unfortunately, we have to redo hooks every bot start to use views. This is because of how ownership works
@@ -1197,82 +1101,6 @@ def model_runner(inferrequest):
             modelusers.pop(idx)
 
 
-async def async_model_factory():
-    global all_tokens
-    global all_time
-    global stay_allocated
-    global model
-    global modelusers
-    global modeltimeout
-    global generator
-    model_dir = "./llama-3.1-8b-instruct-abliterated-exl2-6.0bpw-rs-hb8"
-    # model_dir = "./llama-3.1-70b-instruct-abliterated-exl2-2.25bpw-h6"
-    config = ExLlamaV2Config(model_dir)
-    config.arch_compat_overrides()
-    tokenizer = ExLlamaV2Tokenizer(config)
-    while True:
-        if model == None and modelusers != []:
-            vram.allocate("Maw")
-            async for i in vram.wait_for_allocation("Maw"):
-                global_model_user_update("(Waiting for " + str(i) + " before loading model.)")
-            print("memory allocated, loading model")
-            model = ExLlamaV2(config)
-            cache = ExLlamaV2Cache(model, lazy=True, max_seq_len=500 * 256)
-            global model_callback_limiter  # no concurrent load, so global is okay
-            model_callback_limiter = time.time()
-
-            def model_load_callback(current, total):
-                print(current, total)
-                global model_callback_limiter
-                if time.time() > model_callback_limiter + 0.6:  # only bursts for the first second or so, so its rate can be higher
-                    global_model_user_update(str(int(current * 100 / total)) + "%")
-                    model_callback_limiter = time.time()
-
-            cache_amount = 500
-            while True:
-                try:
-                    model.load_autosplit(cache, progress=False, callback=model_load_callback)
-                except Exception as e:
-                    cache_amount -= 10
-                    if cache_amount < 20:
-                        print("Lowering cache did not help")
-                        raise e
-                    else:
-                        cache = ExLlamaV2Cache(model, lazy=True, max_seq_len=cache_amount * 256)
-                else:
-                    break
-            print("Final cache size:", cache_amount * 256)
-            gc.collect()
-            torch.cuda.empty_cache()
-            generator = ExLlamaV2DynamicGeneratorAsync(
-                model=model,
-                cache=cache,
-                tokenizer=tokenizer,
-            )
-        if modelusers != []:
-            for idx, request in enumerate(modelusers):
-                if isinstance(request, CharacterInferRequest) or isinstance(request, VCInferRequest):
-                    threading.Thread(target=model_runner, args=[request]).start()
-                    del modelusers[idx]
-        if modelusers == [] and model != None:
-            if modeltimeout == None or time.time() > modeltimeout:
-                model = None
-                modeltimeout = None
-                await generator.close()
-                model = None
-                cache = None
-                generator = None
-                gc.collect()
-                torch.cuda.empty_cache()
-                vram.deallocate("Maw")
-        time.sleep(0.01)
-
-
-def model_factory():
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(async_model_factory())
-
-
 async def async_watcher():
     global all_tokens
     global all_time
@@ -1282,12 +1110,11 @@ async def async_watcher():
     global typing_channels
     # model = None
     self_allocated = False
-    model_dir = "./llama-3.1-8b-instruct-abliterated-exl2-6.0bpw-rs-hb8"  # 6.0bpw has a good bit to perplexity ratio. High speed, low size.
-    # model_dir = "./llama-3.1-70b-instruct-abliterated-exl2-2.25bpw-h6"
+    model_dir = "./dr1-32b-abliterated-exl2-4.0bpw-hb6"
     config = ExLlamaV2Config(model_dir)
     config.arch_compat_overrides()
     model_loaded = False
-    cache_size = 250
+    cache_size = 160
     tokenizer = ExLlamaV2Tokenizer(config)
     load_end = None
     while True:
@@ -1295,7 +1122,7 @@ async def async_watcher():
             if self_allocated:
                 stay_allocated -= 1
                 self_allocated = False
-            if model_loaded:
+            if model_loaded and load_end <= time.perf_counter():
                 if stay_allocated == 0:
                     # If this bot is allocated, there's no need to delete the model until we deallocate.
                     # Drastically decreases voice response time
@@ -1334,7 +1161,7 @@ async def async_watcher():
                 model_callback_limiter = time.time()
 
                 def model_load_callback(current, total):
-                    print(current, total)
+                    print(current, total, end="\r")
                     global model_callback_limiter
                     if time.time() > model_callback_limiter + 1.0:  # only bursts for the first second or so, so its rate can be higher
                         if current_gen.character.maw:
@@ -1349,7 +1176,7 @@ async def async_watcher():
                         model_callback_limiter = time.time()
 
                 model = ExLlamaV2(config)
-                cache = ExLlamaV2Cache(model, lazy=True, max_seq_len=cache_size * 256)
+                cache = ExLlamaV2Cache_Q4(model, lazy=True, max_seq_len=cache_size * 256)
                 model.load_autosplit(cache, progress=False, callback=model_load_callback)
                 print("Final cache size:", cache_size * 256)
                 model_loaded = True
@@ -1378,14 +1205,14 @@ async def async_watcher():
             # input_ids = tokenizer.encode(model_input, add_bos=False, encode_special_tokens=True)
             input_ids = model_input
             print(model_input)
-            temp = randint(500, 650) / 1000
+            temp = randint(600, 800) / 1000
             #token_padding = -tokenizer.config.vocab_size % 32
             #token_bias = torch.zeros((tokenizer.config.vocab_size + token_padding,), dtype=torch.float)
             #token_bias[tokenizer.single_id("<|eot_id|>")] = float("-4.0")
             #sampler = ExLlamaV2Sampler.Settings(top_p=0.95, top_k=100, min_p=0.01, temperature=temp, dry_base=1.75,
             #                                    dry_multiplier=0.2, dry_allowed_length=2, xtc_probability=0.5,
             #                                    xtc_threshold=0.05) # , token_bias=token_bias, logit_high_temp=temp+0.6, logit_temp_threshold=16.0, smoothing_factor=0.1, min_temp=temp-0.1, max_temp=temp+0.1
-            sampler = ExLlamaV2Sampler.Settings(top_p=0.95, top_k=100, min_p=0.01, temperature=temp)
+            sampler = ExLlamaV2Sampler.Settings(top_p=0.8, top_k=50, token_repetition_penalty=1.07, min_p=0.01, temperature=temp)
             banned_strings = [
                 "I cannot provide",
                 "I cannot assist",
@@ -1414,7 +1241,7 @@ async def async_watcher():
             ]
             job = ExLlamaV2DynamicJob(
                 input_ids=input_ids,
-                max_new_tokens=768,
+                max_new_tokens=2048,
                 token_healing=True,
                 banned_strings=banned_strings,
                 gen_settings=sampler,
@@ -1433,6 +1260,7 @@ async def async_watcher():
             eos = False
             start_time = time.time()
             dante_call = False
+            thinks = []
             while not eos:
                 results = generator.iterate()
                 if results != []:
@@ -1443,18 +1271,11 @@ async def async_watcher():
                         print(text, end="", flush=True)
                         if vc_session:
                             vc_response += text
-                            # end_ids = [".", "\n", "!", "?"]
-                            # end_ids = ["\n"]
-                            # end_ids = []
-                            # for end_id in end_ids:
-                            #     if end_id in vc_response:
-                            #         text += "<|eot_id|>"
-                            #         vc_response += "<|eot_id|>"
                             find_image = re.compile(r'<-[\S\s]+>')
                             for image in re.findall(find_image, vc_response):
                                 vc_response = vc_response.replace(image, "")
-                            if "<|eot_id|>" in vc_response:
-                                vc_response = vc_response.replace("<|eot_id|>", "")
+                            if "<｜end▁of▁sentence｜>" in vc_response:
+                                vc_response = vc_response.replace("<｜end▁of▁sentence｜>", "")
                                 voice_queue[vc_session].append(vc_response)
                                 vc_response = ""
                             end_ids = [".", "\n", "!", "?"]
@@ -1464,7 +1285,13 @@ async def async_watcher():
                                     vc_response = ""
                         response += text
                         final_response += text
-                        if "<-" in response and character.maw and not isinstance(
+                        think_re = re.compile('<think>.*?</think>', flags=re.DOTALL)
+                        for think in re.findall(think_re, final_response):
+                            replaced_think = think.replace("<think>", "").replace("</think>", "").strip()
+                            if replaced_think != "":
+                                thinks.append(replaced_think)
+                            final_response = final_response.replace(think, "")
+                        if "<-" in response and "<think>" not in final_response and character.maw and not isinstance(
                                 message.channel, discord.DMChannel):
                             dante_call = True
                             find_image = re.compile(r'<-[\S\s]+>')
@@ -1485,18 +1312,18 @@ async def async_watcher():
                                 if word.lower().strip() in [(x.global_name if x.global_name else x.name).lower().strip() for x in message.guild.humans]:
                                     mention = message.guild.humans[[(x.global_name if x.global_name else x.name).lower().strip() for x in message.guild.humans].index(word.lower().strip())].mention
                                     final_response = final_response.replace(word.strip(), mention)
-                        if "<|eot_id|>" in response:
+                        if "<｜end▁of▁sentence｜>" in response:
                             eos = True
-                            final_response = final_response.replace("<|eot_id|>", "")
-                            response = response.replace("<|eot_id|>", "")
+                            final_response = final_response.replace("<｜end▁of▁sentence｜>", "")
+                            response = response.replace("<｜end▁of▁sentence｜>", "")
                         if time.time() - limiter > 1.2:
                             limiter = time.time()
                             if character.maw:
-                                asyncio.run_coroutine_threadsafe(coro=message.edit(final_response[:1999]),
+                                asyncio.run_coroutine_threadsafe(coro=message.edit(final_response.replace("<think>", "").replace("</think>", "")[:1999]),
                                                                  loop=client.loop)
                             else:
                                 asyncio.run_coroutine_threadsafe(
-                                    coro=temp_edit(message.id, thread, final_response[:1999], channel.id),
+                                    coro=temp_edit(message.id, thread, final_response.replace("<think>", "").replace("</think>", "")[:1999], channel.id),
                                     loop=client.loop)
                 else:
                     eos = True
@@ -1504,16 +1331,19 @@ async def async_watcher():
             if character.maw:
                 if not message.channel.id in [x.character_message.channel.id for x in
                                               model_queue[1:]] and not current_gen.vc:
-                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, final_response[:1999]),
+                    asyncio.run_coroutine_threadsafe(coro=edit_add_redobutton(message, final_response.replace("<think>", "").replace("</think>", "")[:1999], thinks),
                                                      loop=client.loop)
                 else:
-                    asyncio.run_coroutine_threadsafe(coro=message.edit(final_response[:1999]), loop=client.loop)
+                    if thinks != []:
+                        asyncio.run_coroutine_threadsafe(coro=message.edit(final_response.replace("<think>", "").replace("</think>", "")[:1999], view=ThinkButton(thinks=thinks)), loop=client.loop)
+                    else:
+                        asyncio.run_coroutine_threadsafe(coro=message.edit(final_response.replace("<think>", "").replace("</think>", "")[:1999]), loop=client.loop)
             else:
                 if thread and not thread.id in [x.character_message.channel.id for x in model_queue[1:]]:
                     try:
                         asyncio.run_coroutine_threadsafe(
-                            coro=edit_add_hookredobutton(hook_list[channel.id], message, final_response[:1999],
-                                                         thread), loop=client.loop)
+                            coro=edit_add_hookredobutton(hook_list[channel.id], message, final_response.replace("<think>", "").replace("</think>", "")[:1999],
+                                                         thread, thinks), loop=client.loop)
                     except Exception as e:
                         exc_type, exc_obj, exc_tb = sys.exc_info()
                         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -1523,8 +1353,8 @@ async def async_watcher():
                 else:
                     try:
                         asyncio.run_coroutine_threadsafe(
-                            coro=edit_add_hookeditbutton(hook_list[channel.id], message, final_response[:1999],
-                                                         thread), loop=client.loop)
+                            coro=edit_add_hookeditbutton(hook_list[channel.id], message, final_response.replace("<think>", "").replace("</think>", "")[:1999],
+                                                         thread, thinks), loop=client.loop)
                     except Exception as e:
                         exc_type, exc_obj, exc_tb = sys.exc_info()
                         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -1546,13 +1376,14 @@ async def async_watcher():
                 history.append(MawCharacterMessage(response, (str(current_gen.character_message.id) + "-" + str(
                     current_gen.character_message.channel.id)), "character"))
             else:
-                history.append(MawCharacterMessage(response, current_gen.character_message.id, "character"))
+                history.append(MawCharacterMessage(re.sub('<think>.*?</think>','',response, flags=re.DOTALL), current_gen.character_message.id, "character"))
+                #history.append(MawCharacterMessage(response, current_gen.character_message.id, "character"))
             current_gen.character.write_history(history)
             del response, generator, job, input_ids, result, results, model_input
             gc.collect()
             torch.cuda.empty_cache()
             model_queue.pop(0)
-            load_end = time.time() - 60 if dante_call else time.time()
+            load_end = time.perf_counter() if dante_call else time.perf_counter() + 60
 
 
 def watcher():
@@ -1755,6 +1586,7 @@ def request_whisper_text(audio):
 def user_listener(session, user, proto):
     try:
         global voice_data
+        global voice_opt
         global exclusive
         print("Started user listener, adjusting audio")
         source = BytesSRAudioSource(voice_data[session][user.id])
@@ -1779,6 +1611,12 @@ def user_listener(session, user, proto):
         while proto.is_connected():
             time.sleep(0.02)
             try:
+                opt_clear = False
+                while proto.is_connected() and user in voice_opt[session]:
+                    time.sleep(0.1)
+                    opt_clear = True
+                if opt_clear:
+                    dq.queue.clear()
                 if not dq.empty():
                     now = datetime.datetime.now(datetime.UTC)
                     phrase_complete = False
@@ -1828,25 +1666,26 @@ def user_listener(session, user, proto):
                                                    wait=True), loop=client.loop).result()
                                 maw_message = asyncio.run_coroutine_threadsafe(coro=session.thread.send("..."),
                                                                                loop=client.loop).result()
-                                relative_path = "./servers/" + str(session.guild.id)
-                                if os.path.isdir(relative_path):
-                                    config = read_config(relative_path)
-                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
-                                    character = MawCharacter("Maw", config, True)
-                                else:
-                                    system_prompt = regular_system_prompt
-                                    config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
-                                                                relative_path + "/history.txt", "Maw", None, 0, 0)
-                                    make_maw_character(relative_path, config)
-                                    config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
-                                    character = MawCharacter("Maw", config, True)
-                                user_message = MawCharacterMessage( # "The user " + str(user.display_name) + " said: " + 
-                                    content=transcript_joined,
-                                    message_id=str(user_hook_message.id), role="user")
-                                model_queue.append(
-                                    CharacterGen(character_message=maw_message, local_character=character,
-                                                 thread=session.thread,
-                                                 user_message=user_message, vc=session))
+                                if user_hook_message != None and maw_message != None:
+                                    relative_path = "./servers/" + str(session.guild.id)
+                                    if os.path.isdir(relative_path):
+                                        config = read_config(relative_path)
+                                        config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
+                                        character = MawCharacter("Maw", config, True)
+                                    else:
+                                        system_prompt = regular_system_prompt
+                                        config = MawCharacterConfig(system_prompt, "", None, relative_path + "/ids.txt",
+                                                                    relative_path + "/history.txt", "Maw", None, 0, 0)
+                                        make_maw_character(relative_path, config)
+                                        config.system_prompt = config.system_prompt + session.guild.name + ", connected to the voice channel " + session.proto.channel.name + ". Since you are in a voice channel, responses should be short, about 1-3 sentences long."
+                                        character = MawCharacter("Maw", config, True)
+                                    user_message = MawCharacterMessage( # "The user " + str(user.display_name) + " said: " + 
+                                        content=transcript_joined,
+                                        message_id=str(user_hook_message.id), role="user")
+                                    model_queue.append(
+                                        CharacterGen(character_message=maw_message, local_character=character,
+                                                     thread=session.thread,
+                                                     user_message=user_message, vc=session))
                         else:
                             asyncio.run_coroutine_threadsafe(
                                 coro=hook.send(content=transcript_joined, username=str(user.display_name),
@@ -2030,19 +1869,15 @@ def auto_watcher():
     random.seed()
     print("auto watcher started")
     while len(maw_auto_servers) > 0:
-        sleeptime = randint(60, 60 * 5)
+        sleeptime = randint(60, 150)
         # sleeptime = 10
-        print("Next auto-sample in:", sleeptime / len(maw_auto_servers))
         time.sleep(sleeptime / len(maw_auto_servers))
         server = random.choice(maw_auto_servers)
         # print("Sampling now, chose server", server)
         if server in maw_auto_watched.keys() and len(list(maw_auto_watched[server].keys())) > 0:
             user = random.choice(list(maw_auto_watched[server].keys()))
             print("Chose user", user, "server", server)
-            # print("Calculated times are:", (maw_auto_watched[server][user][0]), ((time.time() - (60 * 60 * 8))))
-            # maw_auto_watched[server][user][0] > (time.time() - (60 * 10)) o
-            #  and maw_auto_watched[server][user][0] > (time.time() - (60 * 60 * 12))
-            if (maw_auto_watched[server][user][0] < (time.time() - (60 * 60 * 2))) and maw_auto_sample[server] == True:
+            if (maw_auto_watched[server][user][0] < (time.time() - (60 * 60 * 10))) and maw_auto_sample[server] == True:
                 maw_auto_sample[server] = False
                 # (character_message, local_character, thread, user_message, vc, start="")
                 try:
@@ -2053,7 +1888,7 @@ def auto_watcher():
                 if channel != None:
                     relative_path = "./servers/" + str(channel.guild.id)
                     if os.path.isdir(relative_path):
-                        if random.randint(1, 5) == 1:  # 1 in 5 chance to respond
+                        if random.randint(1, 3) == 1:  # 1 in 3 chance to respond
                             # ^ eventually this should be configurable
                             config = read_config(relative_path)
                             if not isinstance(channel, discord.DMChannel):
@@ -2063,7 +1898,7 @@ def auto_watcher():
                                                                            loop=client.loop).result()
                             model_queue.append(
                                 CharacterGen(character_message=maw_message, local_character=character, thread=channel,
-                                             user_message=None, vc=False, start="", auto=user))
+                                             user_message=None, vc=False, start="<think>\n\nTo respond as Maw in a way that would build on the conversation, I should", auto=user))
                         del maw_auto_watched[server][user]
         else:
             print("Server doesn't exist in watched")
@@ -2088,16 +1923,17 @@ async def on_message(message):
     global last_message
     global watched_avatars
     global maw_voice_channels
+    global thought_retainer
     maw_response = False
     character_response = False
     dm = False
-    if message.type != discord.MessageType.default and message.type != discord.MessageType.reply:
+    if message.type != discord.MessageType.default and message.type != discord.MessageType.reply or message.author.id == client.user.id or message.webhook_id != None:
         return
     if isinstance(message.channel, discord.TextChannel):
-        if "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
+        if "maw," in message.content.lower() or "<@" + str(client.user.id) + ">" in message.content.lower() or (message.reference != None and message.reference.cached_message != None and message.reference.cached_message.author.id == client.user.id) and not r"\end" in message.content.lower() and not "/end" in message.content.lower(): maw_response = True
         try:
             if last_message[message.channel.id].author.id == client.user.id and second_last_message[
-                message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
+                message.channel.id].author.id == message.author.id and not r"\end" in message.content and not "/end" in message.content:
                 maw_response = True
         except Exception as e:
             pass
@@ -2105,25 +1941,25 @@ async def on_message(message):
         if os.path.isdir("./characters/" + str(message.guild.id) + "/" + str(message.channel.id)):
             character_response = True
             maw_response = False
-        elif "maw," in message.content.lower() and not r"\end" in message.content.lower() and not "/end" in message.content.lower():
+        elif "maw," in message.content.lower() or "<@" + str(client.user.id) + ">" in message.content.lower() or (message.reference != None and message.reference.cached_message != None and message.reference.cached_message.author.id == client.user.id) and not r"\end" in message.content.lower() and not "/end" in message.content.lower():
             maw_response = True
         else:
             try:
                 if last_message[message.channel.id].author.id == client.user.id and second_last_message[
-                    message.channel.id].author.id == message.author.id and not message.author.bot and not r"\end" in message.content and not "/end" in message.content:
+                    message.channel.id].author.id == message.author.id and not r"\end" in message.content and not "/end" in message.content:
                     maw_response = True
             except Exception as e:
                 pass
         for x in maw_voice_channels:
-            if x.thread == message.channel and message.content and message.content != None and not message.author.bot:
+            if x.thread == message.channel and message.content and message.content != None:
                 print(message.content)
                 voice_queue[x].append(message.content)
     if isinstance(message.channel, discord.DMChannel):
         maw_response = True
         dm = True
-    if message.author.bot:
-        character_response = False
-        maw_response = False
+    #if message.author.bot:
+    #    character_response = False
+    #    maw_response = False
     if message.channel in [x.thread for x in maw_voice_channels]:
         maw_response = False
     try:
@@ -2191,21 +2027,40 @@ async def on_message(message):
         # history = character.read_history()
         # history.append(MawCharacterMessage(message.content, str(message.id), "user"))
         # character.write_history(history)  # if message is edited or deleted during generation, it needs to be reflected
-        user_message = MawCharacterMessage(content=("The user " + (message.author.global_name if message.author.global_name else message.author.name) + " said: " + message.content.strip()), message_id=str(message.id), role="user")
+        user_message = MawCharacterMessage(content=("The user " + (message.author.global_name if message.author.global_name else message.author.name) + " said: " + message.content.replace("<@" + str(client.user.id) + ">", "Maw").strip()), message_id=str(message.id), role="user")
         model_queue.append(
             CharacterGen(character_message=maw_message, local_character=character, thread=message.channel,
-                         user_message=user_message, vc=False))
+                         user_message=user_message, vc=False, start="<think>"))
         # global modelusers
         # modelusers.append(CharacterInferRequest(character_message=maw_message, character=character, thread=message.channel if isinstance(message.channel, discord.Thread) else None, user_message=user_message, start=""))
         try:
             if isinstance(message.channel, discord.DMChannel):
                 old_message = await message.channel.fetch_message(old_message_id[0])
-                await old_message.edit(view=None)
+                try:
+                    thinks = thought_retainer[old_message.id]
+                except:
+                    await old_message.edit(view=None)
+                else:
+                    if "".join(thinks).strip() != "":
+                        await old_message.edit(view=ThinkButton(thinks=thinks))
+                    else:
+                        await old_message.edit(view=None)
             else:
                 if old_message_id:
                     channel = client.get_channel(old_message_id[1])
                     old_message = await channel.fetch_message(old_message_id[0])
-                    await old_message.edit(view=None)
+                    try:
+                        thinks = thought_retainer[old_message.id]
+                    except:
+                        await old_message.edit(view=None)
+                    else:
+                        if "".join(thinks).strip() != "":
+                            try:
+                                await old_message.edit(view=ThinkButton(thinks=thinks))
+                            except Exception as e:
+                                print(repr(e))
+                        else:
+                            await old_message.edit(view=None)
         except:
             pass
     if character_response:
@@ -2232,13 +2087,22 @@ async def on_message(message):
             user_message = MawCharacterMessage(content=message.content, message_id=str(message.id), role="user")
             model_queue.append(
                 CharacterGen(character_message=character_message, local_character=character, thread=message.channel,
-                             user_message=user_message, vc=False))
+                             user_message=user_message, vc=False, start="<think>\n\nAlright, so I'm trying to respond as"))
             if old_message_id:
                 try:
-                    await hook.edit_message(message_id=old_message_id, view=EditMessageButton(), thread=message.channel)
-                except:
-                    pass  # isn't really needed, but I don't like random error messages in my console
-    if not maw_response and not character_response and not message.author.bot and message.guild:
+                    try:
+                        thinks = thought_retainer[old_message_id]
+                    except:
+                        await hook.edit_message(message_id=old_message_id, view=EditMessageButton(), thread=message.channel)
+                        thought_retainer[old_message_id] = []
+                    else:
+                        if "".join(thinks).strip() != "":
+                            await hook.edit_message(message_id=old_message_id, view=EditMessageButtonThink(thinks=thinks), thread=message.channel)
+                        else:
+                            await hook.edit_message(message_id=old_message_id, view=EditMessageButton(), thread=message.channel)
+                except Exception as e:
+                    print(repr(e))
+    if not maw_response and not character_response and not message.author.id == client.user.id and message.guild:
         global watched_channels
         if message.channel.id in watched_channels:
             try:
@@ -2255,10 +2119,8 @@ async def on_message(message):
                             maw_auto_watched[message.guild.id]
                         except:
                             maw_auto_watched[message.guild.id] = {message.author: [time.time(), message.channel]}
-                            print("user added to the auto watched")
                         else:
                             maw_auto_watched[message.guild.id][message.author] = [time.time(), message.channel]
-                            print("user added to the auto watched")
                     maw_auto_watched
                     relative_server_path = "./servers/" + str(message.guild.id)
                     relative_thread_path = "./characters/" + str(message.guild.id) + "/" + str(message.channel.id)
@@ -2288,17 +2150,32 @@ async def on_message(message):
                                 try:
                                     if isinstance(message.channel, discord.DMChannel):
                                         old_message = await message.channel.fetch_message(old_message_id)
-                                        await old_message.edit(view=None)
+                                        try:
+                                            thinks = thought_retainer[old_message.id]
+                                        except:
+                                            await old_message.edit(view=None)
+                                        else:
+                                            if "".join(thinks).strip() != "":
+                                                await old_message.edit(view=ThinkButton(thinks=thinks))
+                                            else:
+                                                await old_message.edit(view=None)
                                     else:
                                         if old_message_id:
                                             print(int(old_message_id[1]))
                                             channel = await client.fetch_channel(int(old_message_id[1]))
                                             print(channel)
                                             old_message = await channel.fetch_message(int(old_message_id[0]))
-                                            await old_message.edit(view=None)
+                                            try:
+                                                thinks = thought_retainer[old_message.id]
+                                            except:
+                                                await old_message.edit(view=None)
+                                            else:
+                                                if "".join(thinks).strip() != "":
+                                                    await old_message.edit(view=ThinkButton(thinks=thinks))
+                                                else:
+                                                    await old_message.edit(view=None)
                                 except Exception as e:
                                     print(repr(e))
-                                    pass  # isn't really needed, but I don't like random error messages in my console
 
 
 @client.event
@@ -2314,17 +2191,17 @@ async def on_raw_message_edit(payload):
             config = read_config("./characters/" + str(channel.guild.id) + "/" + str(channel.id))
             character = MawCharacter(config.name, config, False)
             new_message = await channel.fetch_message(payload.message_id)
-            if not new_message.author.bot:
-                history = character.read_history()
-                message_idx = None
-                for idx, message in enumerate(history):
-                    if int(message.message_id) == payload.message_id:
-                        message_idx = idx
-                        break
-                if message_idx != None:
-                    history[message_idx] = MawCharacterMessage(payload.data["content"], history[message_idx].message_id,
-                                                               history[message_idx].role)
-                character.write_history(history)
+            #if not new_message.author.bot:
+            history = character.read_history()
+            message_idx = None
+            for idx, message in enumerate(history):
+                if int(message.message_id) == payload.message_id:
+                    message_idx = idx
+                    break
+            if message_idx != None:
+                history[message_idx] = MawCharacterMessage(payload.data["content"], history[message_idx].message_id,
+                                                           history[message_idx].role)
+            character.write_history(history)
 
 
 @client.event
@@ -2350,7 +2227,16 @@ async def on_raw_message_delete(payload):
             if edit_message.role == "character":
                 edit_message = await channel.fetch_message(edit_message.message_id)
                 hook = await get_webhook(channel.parent)
-                await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButton())
+                global thought_retainer
+                try:
+                    thinks = thought_retainer[edit_message.id]
+                except Exception as e:
+                    await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButton())
+                else:
+                    if "".join(thinks).strip() != "":
+                        await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButtonThink(thinks=thinks))
+                    else:
+                        await hook.edit_message(message_id=edit_message.id, thread=channel, view=EditAndRedoMessageButton())
 
 
 @client.event
@@ -2381,6 +2267,8 @@ async def on_voice_state_update(member, before, after):
                     await sent_message.edit(view=VoiceTranscribe(session=session))
                     global exclusive
                     exclusive[session] = True
+                    global voice_opt
+                    voice_opt[session] = []
                     maw_voice_channels.append(session)
                     threading.Thread(target=await_voice_allocation, args=[session]).start()
                 except Exception as e:
@@ -2505,6 +2393,8 @@ async def join(
                 await sent_message.edit(view=VoiceResponse(session=session))
             global exclusive
             exclusive[session] = transcribe_only
+            global voice_opt
+            voice_opt[session] = []
             maw_voice_channels.append(session)
             threading.Thread(target=await_voice_allocation, args=[session]).start()
         except Exception as e:
