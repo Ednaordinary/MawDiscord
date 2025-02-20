@@ -1,4 +1,4 @@
-# THIS FILE IS FROM https://github.com/Ednaordinary/ModelManager
+# THIS FILE IS FROM https://github.com/Ednaordinary/ModelManager + modification
 
 import time
 
