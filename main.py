@@ -1152,7 +1152,7 @@ async def async_watcher():
                 stay_allocated += 1
                 self_allocated = True
                 print("request sent")
-                async for i in vram.wait_for_allocation("Maw"):
+                for i in vram.wait_for_allocation("Maw"):
                     if current_gen.character.maw:
                         asyncio.run_coroutine_threadsafe(coro=current_gen.character_message.edit(
                             "(Waiting for " + str(i) + " before loading model.)"), loop=client.loop)
@@ -2322,7 +2322,7 @@ async def async_await_voice_allocation(session):
     global stay_allocated
     stay_allocated += 1
     alloc_message = None
-    async for i in vram.wait_for_allocation("Maw"):
+    for i in vram.wait_for_allocation("Maw"):
         if alloc_message == None:
             alloc_message = asyncio.run_coroutine_threadsafe(
                 coro=session.thread.send("Waiting for " + str(
