@@ -1,10 +1,10 @@
-# Currently unused! Meant for a future revision of Maw
-
-import vram
 import threading
 import time
-from exl2model import Exl2Engine
-from multiprocessing import Queue
+from queue import Queue
+from .exl2model import Exl2Engine
+from .vram import Vram
+
+vram = Vram()
 
 class ModelHandler:
     def __init__(self):
@@ -12,7 +12,7 @@ class ModelHandler:
         self.allocation_lock = False
         self.users = 0
         self.progress = None
-    def allocate(progress=False):
+    def allocate(self, progress=False):
         if self.users < 0: # well that's not right
             self.users = 1
         else:
@@ -29,9 +29,9 @@ class ModelHandler:
                     yield (True, i)
                 self.progress = (True, i)
             self.allocation_lock = False
-            return self.model
+            yield self.model
         elif self.model != None:
-            return self.model
+            yield self.model
         else:
             last_prog = None
             while self.allocation_lock == True:
@@ -39,8 +39,8 @@ class ModelHandler:
                 if not self.prog == last_prog:
                     last_prog = self.prog
                     yield self.prog
-            return self.model
-    def deallocate():
+            yield self.model
+    def deallocate(self):
         self.users -= 1
         if self.users < 0:
             self.users = 0
@@ -56,19 +56,21 @@ class Exl2ModelHandler(ModelHandler):
         self.cache_impl = cache_impl
         self.loop = loop
         self.chunk_size = chunk_size
-        self.progress = Queue()
+        self.load_progress = Queue()
     def load_callback(self, current, total):
-        self.progress.put(tuple((current, total)))
+        print(int(100*(current / total)), end="\r")
+        self.load_progress.put(tuple((current, total)))
     def _load(self):
         try:
             self.model = Exl2Engine(self.model_id, self.cache_size, self.cache_impl, self.loop, self.load_callback)
-        except:
-            pass
-        self.progress.put(True)
+        except Exception as e:
+            print(repr(e))
+        self.load_progress.put(True)
+        print()
     def load(self):
-        threading.Thread(target=_load).start()
+        threading.Thread(target=self._load).start()
         while True:
-            prog = self.progress.get()
+            prog = self.load_progress.get()
             if prog == True:
                 break
             else:
@@ -81,11 +83,11 @@ class Exl2ModelHandler(ModelHandler):
 
 class Exl2ModelHandlerLazy(Exl2ModelHandler):
     def __init__(self, model_id, cache_size, cache_impl, loop, chunk_size=512, timeout=10 * 60):
-        super().__init__()
+        super().__init__(model_id, cache_size, cache_impl, loop, chunk_size)
         self.timeout = timeout
         self.timeout_lock = False
         self.current_timeout = None
-    def deallocate():
+    def deallocate(self):
         self.users -= 1
         if self.users < 0:
             self.users = 0
@@ -101,10 +103,11 @@ class Exl2ModelHandlerLazy(Exl2ModelHandler):
                     break
                 if len([x for x in vram.get_allocations() if x != "Maw"]) != 0:
                     break
-            self.current_timeout = None
-            self.allocation_lock = True
-            self.model.end()
-            self.model = None
-            self.allocation_lock = False
+            if self.users < 1:
+                self.current_timeout = None
+                self.allocation_lock = True
+                self.model.end()
+                self.model = None
+                self.allocation_lock = False
         else:
             self.current_timeout = self.timeout + time.perf_counter()
