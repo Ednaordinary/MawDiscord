@@ -45,7 +45,6 @@ class ModelHandler:
         if self.users < 0:
             self.users = 0
         if self.users == 0 and self.model != None and self.allocation_lock == False:
-            self.allocation_lock = True
             threading.Thread(target=self.unload).start()
 
 class Exl2ModelHandler(ModelHandler):
@@ -76,13 +75,14 @@ class Exl2ModelHandler(ModelHandler):
             else:
                 yield prog
     def unload(self):
+        self.allocation_lock = True
         self.model.end()
         self.model = None
         self.allocation_lock = False
         vram.deallocate("Maw")
 
 class Exl2ModelHandlerLazy(Exl2ModelHandler):
-    def __init__(self, model_id, cache_size, cache_impl, loop, chunk_size=512, timeout=10 * 60):
+    def __init__(self, model_id, cache_size, cache_impl, loop, chunk_size=512, timeout=1 * 60):
         super().__init__(model_id, cache_size, cache_impl, loop, chunk_size)
         self.timeout = timeout
         self.timeout_lock = False
@@ -109,5 +109,6 @@ class Exl2ModelHandlerLazy(Exl2ModelHandler):
                 self.model.end()
                 self.model = None
                 self.allocation_lock = False
+                vram.deallocate("Maw")
         else:
             self.current_timeout = self.timeout + time.perf_counter()

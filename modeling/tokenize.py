@@ -42,7 +42,8 @@ class Tokenizer:
                 if len(tokenized[0]) > cutoff:
                     return last_tokenize
                 else: last_tokenize = tokenized
-            print(self.decode(last_tokenize[0]))
+            if last_tokenize != None:
+                print(self.decode(last_tokenize[0]))
             return last_tokenize
     def decode(self, tokens):
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
