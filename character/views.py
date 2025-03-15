@@ -20,7 +20,7 @@ class EditModal(discord.ui.Modal):
             default_value=self.original_content[:1999],
             required=True,
             min_length=1,
-            max_length=2000,
+            max_length=1999,
         )
         self.add_item(self.content)
         
@@ -56,11 +56,11 @@ class ScrollRedoView(discord.ui.View):
         return self.idx
     def set_idx(self):
         self.idx = idx
-    def update_answer(self, idx, updated):
+    def update_answer(self, idx, updated, limit=True):
         self.answers[idx] = updated
         if idx == self.idx:
-            self.history.edit_message(Message(self.message.id, updated, "assistant"))
-            if self.limiter + 1.1 < time.perf_counter():
+            if self.limiter + 1.1 < time.perf_counter() or limit == False:
+                self.history.edit_message(Message(self.message.id, updated, "assistant"))
                 answer = self.get_answer()
                 self.handle_disabled()
                 asyncio.run_coroutine_threadsafe(self.message.edit(content=answer[:1999], view=self), self.loop)
@@ -90,6 +90,12 @@ class ScrollRedoView(discord.ui.View):
             if child.label == "💭":
                 return child
     def handle_disabled(self):
+        if self.idx == len(self.answers) - 1:
+            idxs = [x + len(self.answers) for x in range(5)]
+            self.answers.extend([""]*5)
+            self.completed.extend([False]*5)
+            scroll_request = self.continue_request(self.user_message, self.message, self.prompt, self.cutoff, self.tools, self.edit, self, idxs)
+            self.queue.put(scroll_request)
         if self.menu not in self.children:
             self.children.append(self.menu)
         if self.thought_button not in self.children:
@@ -105,16 +111,6 @@ class ScrollRedoView(discord.ui.View):
             if child.label == "⬅️":
                 if self.idx == 0:
                     child.disabled = True
-                else:
-                    child.disabled = False
-            if child.label == "➡️":
-                if self.idx == len(self.answers) - 1:
-                    #child.disabled = True
-                    idxs = [x + len(self.answers) for x in range(5)]
-                    self.answers.extend([""]*5)
-                    self.completed.extend([False]*5)
-                    scroll_request = self.continue_request(self.user_message, self.message, self.history, self.prompt, self.cutoff, self.tools, self.edit, self, idxs)
-                    self.queue.put(scroll_request)
                 else:
                     child.disabled = False
             if child.label == "🖊️":
