@@ -20,45 +20,36 @@ client, token = init()
 
 cutoff = 1024 * 15
 model_loop = Exl2Loop()
-model_handler = Exl2ModelHandlerLazy("dr1-32b-abliterated-exl2-4.0bpw-hb8", 1024 * 40, ExLlamaV2Cache_Q4, model_loop)
+model_handler = Exl2ModelHandlerLazy("dr1-32b-abliterated-exl2-4.0bpw-hb8", 1024 * 60, ExLlamaV2Cache_Q4, model_loop)
 tokenizer = Tokenizer("deepseek-ai/DeepSeek-R1-Distill-Qwen-32B")
 
 character_queue = Queue()
 handled_channels = {}
 
-def channel_handler(channel_id):
-    while len(handled_channels[channel_id]) > 0:
-        model = None
-        to_handle = handled_channels[channel_id]
-        limiter = time.perf_counter()
-        for i in model_handler.allocate(progress = True):
-            if isinstance(i, tuple):
-                for x in to_handle:
-                    if i[0] == False:
-                        x.update_progress("Waiting on " + i[1].strip(), client.loop)
-                    else:
-                        if limiter + 0.9 < time.perf_counter():
-                            x.update_progress(str(int(100*(i[1][0] / i[1][1]))) + "%", client.loop)
-                            limiter = time.perf_counter()
+def handler(to_handle):
+    limiter = time.perf_counter()
+    for i in model_handler.allocate(progress = True):
+        if isinstance(i, tuple):
+            if i[0] == False:
+                to_handle.update_progress("Waiting on " + i[1].strip(), client.loop)
             else:
-                model = i
-        if model == None:
-            print("Model was not properly allocated")
-            return
-        to_handle[0].handle(model, tokenizer, client.loop, character_queue)
-        handled_channels[channel_id].pop(0)
-    del handled_channels[channel_id]
+                if limiter + 0.9 < time.perf_counter():
+                    to_handle.update_progress(str(int(100*(i[1][0] / i[1][1]))) + "%", client.loop)
+                    limiter = time.perf_counter()
+        else:
+            model = i
+    if model == None:
+        print("Model was not properly allocated")
+        return
+    to_handle.handle(model, tokenizer, client.loop, character_queue)
+    model_handler.deallocate()
 
 def character_watcher():
     global character_queue
     while True:
         current = character_queue.get()
         if isinstance(current, CharacterRequest):
-            if current.channel.id in handled_channels.keys():
-                handled_channels[current.channel.id].append(current)
-            else:
-                handled_channels[current.channel.id] = [current]
-                threading.Thread(target=channel_handler, args=[current.channel.id]).start()
+            threading.Thread(target=handler, args=[current]).start()
 
 @client.event
 async def on_message(message):
@@ -83,8 +74,12 @@ async def on_raw_message_edit(payload):
         if os.path.exists(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)):
             history = History(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id), MawPrompts.default)
             try:
+                if payload.cached_message and payload.cached_message.author.id == client.user.id:
+                    return
                 channel = client.get_channel(payload.channel_id)
                 message = await channel.fetch_message(payload.message_id)
+                if message.author.id == client.user.id:
+                    pass
             except:
                 pass
             else:
