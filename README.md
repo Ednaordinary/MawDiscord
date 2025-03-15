@@ -41,13 +41,10 @@ https://github.com/user-attachments/assets/7317a1e6-a4c1-4cc9-99bf-4b768f4bdc20
 ```sh
 git clone https://github.com/Ednaordinary/MawDiscord/
 cd MawDiscord
-mkdir characters
-mkdir servers
-python3 -m venv venv
-cd venv
-source bin/activate
-cd ..
-pip install -r requirements.txt
+pip install uv
+uv venv
+source .venv/bin/activate
+uv pip install -r pyproject.toml
 ```
 
 Merge the following PRs into your environment:
@@ -60,8 +57,6 @@ Place your bot token as `DISCORD_TOKEN` in a .env file
 ## Run
 
 ```sh
-cd venv
-source bin/activate # if you haven't already activated the environment
-cd ..
+source .venv/bin/activate # if you haven't already activated the environment
 python3 ./main.py
 ```
