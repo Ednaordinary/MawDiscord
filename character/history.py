@@ -46,8 +46,9 @@ class History:
             return self.history
     def append_message(self, message):
         self.read_history()
-        self.history.append(message)
-        self.write_history()
+        if message.message_id not in [x.message_id for x in self.history]:
+            self.history.append(message)
+            self.write_history()
     def add_message(self, message):
         self.append_message(message)
         self.sort_messages()
