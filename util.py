@@ -36,11 +36,14 @@ def get_path(path_type="maw", data_type = "history", char_id=None, server_id=Non
 
 def get_all_chars(server_id):
     chars = []
-    for i in os.listdir("data/server/" + str(server_id) + "/char/"):
-        try:
-            chars.append(int(i))
-        except:
-            pass
+    try:
+        for i in os.listdir("data/server/" + str(server_id) + "/char/"):
+            try:
+                chars.append(int(i))
+            except:
+                pass
+    except:
+        pass
     return chars
 
 def is_referring(message, user):
