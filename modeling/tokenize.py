@@ -30,7 +30,10 @@ class Tokenizer:
                 history = [x for x in history if x["role"] != "system"]
             else:
                 fake_history = []
-            last_tokenize = None
+            last_tokenize = self.tokenizer.apply_chat_template(
+                    conversation={}, tokenize=True,
+                    return_tensors = "pt", add_generation_prompt=True,
+                )
             print(history)
             for i in history[::-1]:
                 print(i)
@@ -42,8 +45,6 @@ class Tokenizer:
                 if len(tokenized[0]) > cutoff:
                     return last_tokenize
                 else: last_tokenize = tokenized
-            if last_tokenize != None:
-                print(self.decode(last_tokenize[0]))
             return last_tokenize
     def decode(self, tokens):
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
