@@ -4,6 +4,8 @@ import asyncio
 import time
 import re
 
+verbose = True
+
 think_regex = re.compile(r'.*?<\/think>', flags=re.DOTALL)
 
 class EditModal(discord.ui.Modal):
@@ -62,6 +64,7 @@ class ScrollRedoView(discord.ui.View):
             if self.limiter + 1.1 < time.perf_counter() or limit == False:
                 self.history.edit_message(Message(self.message.id, updated, "assistant"))
                 answer = self.get_answer()
+                if verbose: print("Editing for", idx, "|", answer[:10])
                 self.handle_disabled()
                 asyncio.run_coroutine_threadsafe(self.message.edit(content=answer[:1999], view=self), self.loop)
                 self.limiter = time.perf_counter()
@@ -129,10 +132,10 @@ class ScrollRedoView(discord.ui.View):
                 pass
             else:
                 child.label = str(self.idx + 1)
-        #if self.runnabletools != []:
-        #    if self.runtools not in self.children:
-        #        self.children.append(self.runtools)
-        #else:
+        if self.runnabletools != []:
+            if self.runtools not in self.children:
+                self.children.append(self.runtools)
+        else:
         self.children = [x for x in self.children if x != self.runtools]
     def get_answer(self, idx=None):
         if idx == None:
