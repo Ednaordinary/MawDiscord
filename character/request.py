@@ -1,25 +1,30 @@
 from exllamav2.generator import ExLlamaV2Sampler
-from .history import Message
 from .views import ScrollRedoView
+from .history import Message
+from queue import Queue
 import threading
 import asyncio
 import random
 import time
 
-def run_handler(idx, engine, history, view):
+verbose = False
+
+def run_handler(idx, engine, history, view, token_count):
+    if verbose: print("Running handler", idx)
     try:
-        temp = random.randint(500, 900) / 1000
-        sampler = ExLlamaV2Sampler.Settings(temperature=temp, min_p=0.02, xtc_threshold=0.1, xtc_probability=0.5, top_k=50, top_p=0.95, token_repetition_penalty=1.0, dry_allowed_length=2, dry_multiplier=0.8, dry_base=1.75, dry_sequence_breakers=["\n", ":", "\"", "*"])
+        temp = random.randint(500, 700) / 1000
+        sampler = ExLlamaV2Sampler.Settings(temperature=temp, min_p=0.02, xtc_threshold=0.05, xtc_probability=0.5, top_k=50, top_p=0.95, token_repetition_penalty=1.0, dry_allowed_length=2, dry_multiplier=0.8, dry_base=1.75, dry_sequence_breakers=["\n", ":", "\"", "*"])
         answer = ""
         for i in engine.generate(history, add_bos=False, stop_token="<｜end▁of▁sentence｜>", max_tokens=1024, sampler=sampler):
-            answer = answer + i
+            token_count.inc()
+            answer += i
             view.update_answer(idx, answer)
         view.update_answer(idx, answer, limit=False)
-        view.complete_answer(idx)
     except Exception as e:
         print(e)
         print(repr(e))
-        view.complete_answer(idx)
+    view.complete_answer(idx)
+    if verbose: print("Handler", idx, "exit")
 
 async def get_scroll_view(history, user_message, bot_message, prompt, tools, edit, queue, loop, cutoff, continue_request):
     return ScrollRedoView([""]*5, history, user_message, bot_message, prompt, tools, edit=edit, queue=queue, loop=loop, cutoff=cutoff, continue_request=continue_request)
@@ -29,6 +34,14 @@ class Request:
         pass
     def handle(self):
         pass
+
+class TokenCount():
+    def __init__(self):
+        self.tokens = 0
+    def inc(self):
+        self.tokens += 1
+    def get(self):
+        return self.tokens
 
 class CharacterRequest(Request):
     def __init__(self, message, bot_message, history, prompt, cutoff, tools, edit):
@@ -48,13 +61,15 @@ class CharacterRequest(Request):
         history = self.history.to_tokenizer(limit=self.message.id)
         history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
         threads = []
+        token_count = TokenCount()
         for i in range(5):
-            threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view]))
+            if verbose: print("Starting handler:", i)
+            threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view, token_count]))
         for i in threads:
             i.start()
-            time.sleep(0.02)
         for i in threads:
             i.join()
+        return token_count.get()
     def update_progress(self, content, discord_loop):
         asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content), loop=discord_loop)
 
@@ -68,10 +83,12 @@ class ScrollRequest(CharacterRequest):
         history = self.view.history.to_tokenizer(limit=self.message.id)
         history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
         threads = []
+        token_count = TokenCount()
         for i in self.idxs:
-            threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view]))
+            if verbose: print("Starting handler", i)
+            threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view, token_count]))
         for i in threads:
             i.start()
-            time.sleep(0.02)
         for i in threads:
             i.join()
+        return token_count.get()
