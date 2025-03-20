@@ -3,11 +3,12 @@ from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Tokenizer
 from multiprocessing import Queue
 import threading
 import asyncio
+import random
+import ctypes
+import torch
 import sys
 import gc
-import torch
-import ctypes
-import random
+import os
 
 libc = ctypes.CDLL("libc.so.6")
 
@@ -61,16 +62,16 @@ class Exl2Engine:
             )
 
     async def _run_job(self, prompt, stop_token: str, add_bos: bool, max_tokens: int, sampler, queue: Queue):
-        job = ExLlamaV2DynamicJobAsync(
-            self.generator,
-            max_new_tokens = max_tokens,
-            token_healing=True,
-            gen_settings=sampler,
-            decode_special_tokens=True,
-            input_ids = self.tokenizer.encode(prompt, add_bos = False) if isinstance(prompt, str) else prompt,
-            seed=random.randint(1, 10000000),
-        )
         try:
+            job = ExLlamaV2DynamicJobAsync(
+                self.generator,
+                max_new_tokens = max_tokens,
+                token_healing=True,
+                gen_settings=sampler,
+                decode_special_tokens=True,
+                input_ids = self.tokenizer.encode(prompt, add_bos = False) if isinstance(prompt, str) else prompt,
+                seed=random.randint(1, 10000000),
+            )
             async for result in job:
                 text = result.get("text", "")
                 if stop_token in text:
@@ -78,8 +79,12 @@ class Exl2Engine:
                     break
                 if text != None and text != "":
                     queue.put(text)
-        except:
-            pass
+        except Exception as e:
+            print("Exception in engine:")
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            print(exc_type, fname, exc_tb.tb_lineno)
+            print(repr(e))
         queue.put(None)
     
     def generate(self, prompt, stop_token, sampler, add_bos=True, max_tokens=256):
