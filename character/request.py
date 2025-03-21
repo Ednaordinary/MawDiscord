@@ -21,6 +21,7 @@ def run_handler(idx, engine, history, view, token_count):
             view.update_answer(idx, answer)
         view.update_answer(idx, answer, limit=False)
     except Exception as e:
+        print("Error in handler")
         print(e)
         print(repr(e))
     view.complete_answer(idx)
@@ -57,6 +58,8 @@ class CharacterRequest(Request):
         return True if self.message.guild != None else None
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
         self.history.add_message(Message(self.message.id, self.prompt, "user"))
+        tool_prompt = self.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
+        self.history.edit_message(Message(0, tool_prompt, "system"))
         view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.history, self.message, self.bot_message, self.prompt, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest), loop=discord_loop).result()
         history = self.history.to_tokenizer(limit=self.message.id)
         history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
@@ -92,3 +95,6 @@ class ScrollRequest(CharacterRequest):
         for i in threads:
             i.join()
         return token_count.get()
+    def update_progress(self, content, discord_loop):
+        if self.view.get_idx() in self.idxs:
+            asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content), loop=discord_loop)
