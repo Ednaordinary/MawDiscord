@@ -14,7 +14,7 @@ from modeling.tokenize import Tokenizer
 from character.request import CharacterRequest
 from character.history import History, Message
 from character.defaults import MawPrompts
-from character.tools import DanteTool
+from character.tools import Tool, DanteTool
 
 from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook
 
@@ -85,8 +85,9 @@ async def on_message(message):
             history = History(get_path("maw", "history", char_id=message.channel.id, server_id=message.guild.id if message.guild else None), MawPrompts.default)
             prompt = str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: " + message.clean_content
             global character_queue
-            dante_tool = DanteTool(get_hook, dante_id, check_perm, message.channel, hooks, client.loop, client.id)
-            character_queue.put(CharacterRequest(message, bot_message, history, prompt, cutoff, [dante_tool], False))
+            tool = Tool()
+            dante_tool = DanteTool(get_hook, dante_id, perm_check, message.channel, hooks, client.loop, client.user.id)
+            character_queue.put(CharacterRequest(message, bot_message, history, prompt, cutoff, [tool, dante_tool], False))
     elif maw_message:
         if perm_check(message.channel, message.guild.me, "send"):
             await message.channel.send("### >>> Maw is in dev mode. Please come back later.")
