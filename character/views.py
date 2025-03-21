@@ -49,7 +49,6 @@ class ScrollRedoView(discord.ui.View):
         self.thought_button = self.get_thought_button()
         self.show_menu = False
         self.handle_disabled()
-        self.runnabletools = []
         self.queue = queue
         self.loop = loop
         self.cutoff = cutoff
@@ -74,7 +73,7 @@ class ScrollRedoView(discord.ui.View):
         answer = self.get_answer()
         if self.idx == idx:
             asyncio.run_coroutine_threadsafe(self.message.edit(content=answer[:1999], view=self), self.loop)
-        else:
+        elif self.completed[self.idx]:
             asyncio.run_coroutine_threadsafe(self.message.edit(view=self), self.loop)
     def get_runtools(self):
         for child in self.children:
@@ -103,6 +102,8 @@ class ScrollRedoView(discord.ui.View):
             self.children.append(self.menu)
         if self.thought_button not in self.children:
             self.children.append(self.thought_button)
+        if self.run_tools not in self.children:
+            self.children.append(self.run_tools)
         for child in self.children: 
             if isinstance(child, discord.ui.StringSelect):
                 if self.show_menu == True:
@@ -111,45 +112,42 @@ class ScrollRedoView(discord.ui.View):
                     if self.menu in self.children:
                         self.children = [x for x in self.children if x != self.menu]
                 continue
-            if child.label == "⬅️":
+            elif child.label == "⬅️":
                 if self.idx == 0:
                     child.disabled = True
                 else:
                     child.disabled = False
-            if child.label == "🖊️":
+            elif child.label == "🖊️":
                 if self.edit == False:
                     self.children = [x for x in self.children if x != child]
                 elif self.completed[self.idx]:
                     child.disabled = False
                 else:
                     child.disabled = True
-            if child.label == "💭":
+            elif child.label == "💭":
                 if self.get_thoughts() == "" or self.show_menu == False:
-                    self.children = [x for x in self.children if x != child]
-            try:
-                int(child.label)
-            except:
-                pass
+                    self.children = [x for x in self.children if x != self.thought_button]
+            elif child.label == "▶️":
+                answer = self.get_answer(do_filter=False)
+                runnabletools = [i for i in self.tools if i.will_run(answer)]
+                if runnabletools == []:
+                    self.children = [x for x in self.children if x != self.runtools]
             else:
-                child.label = str(self.idx + 1)
-        if self.runnabletools != []:
-            if self.runtools not in self.children:
-                self.children.append(self.runtools)
-        else:
-        self.children = [x for x in self.children if x != self.runtools]
-    def get_answer(self, idx=None):
+                try:
+                    int(child.label)
+                except:
+                    pass
+                else:
+                    child.label = str(self.idx + 1)
+    def get_answer(self, idx=None, do_filter=True):
         if idx == None:
             idx = self.idx
         answer = self.answers[idx]
         for match in re.findall(think_regex, answer):
             answer = answer.replace(match, "").strip()
-        if idx == self.idx:
-            runnabletools = []
+        if idx == self.idx and do_filter:
             for tool in self.tools:
                 answer = tool.filter(answer)
-            for tool in self.tools:
-                runnabletools.append(tool.will_run(answer))
-            self.runnabletools = runnabletools
         return answer
     def get_thoughts(self):
         answer = self.answers[self.idx]
@@ -183,7 +181,10 @@ class ScrollRedoView(discord.ui.View):
         await interaction.response.edit_message(content=answer[:1999] if answer != "" else "", view=self)
     @discord.ui.button(label="▶️", style=discord.ButtonStyle.green)
     async def run_tools(self, button: discord.ui.Button, interaction: discord.Interaction):
-        pass
+        answer = self.get_answer(do_filter=False)
+        runnabletools = [i for i in self.tools if i.will_run(answer)]
+        for tool in runnabletools:
+            tool.run(answer)
     @discord.ui.string_select(row=2, min_values=1, max_values=1, options=[])
     async def select_prompt(self, select: discord.ui.StringSelect, interaction: discord.Interaction):
         self.idx = int(select.values[0])
