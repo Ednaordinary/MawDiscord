@@ -4,7 +4,7 @@ import os
 role_trans = {"user": "u", "system": "s", "assistant": "c"}
 role_trans_rev = {"u": "user", "s": "system", "c": "assistant"}
 
-verbose = True
+verbose = False
 
 class Message:
     def __init__(self, message_id, content, role):
@@ -31,10 +31,12 @@ class History:
             f.write("")
         self.wait = False
         if self.sys != None:
+            if verbose: print("adding system message")
             self.add_message(Message(0, self.sys, "system"))
+            if verbose: print("(sys):", self.history)
     def write_history(self):
         if verbose: print("write_history called")
-        if verbose: print(len(self.history))
+        if verbose: print("(write):", self.history)
         content = ""
         for message in self.history:
             content += (role_trans[message.role] if message.role in role_trans.keys() else "c") + "|"
@@ -67,7 +69,9 @@ class History:
             self.wait = False
         else:
             self.touch_history()
+            history = self.read_history(limit=limit, usable=usable)
         self.history = history
+        if verbose: print("(read):", self.history)
         if limit != None:
             #self.history.sort(key=lambda x: x.message_id)
             return [x for x in self.history if x.message_id <= limit]
@@ -82,13 +86,13 @@ class History:
     def add_message(self, message):
         if verbose: print("add_message called")
         self.append_message(message)
+        self.sort_messages()
     def sort_messages(self):
         # Message IDs are in order, which we can use to our advantage
         if verbose: print("sort_messages called")
         self.read_history()
-        if verbose: print(self.history)
         self.history.sort(key=lambda x: x.message_id)
-        if verbose: print(self.history)
+        if verbose: print("(sort):", self.history)
         self.write_history()
     def remove_message(self, message_id):
         if verbose: print("remove_message called")
@@ -105,9 +109,8 @@ class History:
         else:
             for idx, i in enumerate(self.history):
                 if i.message_id == message.message_id:
-                    role = i.role
                     self.remove_message(message.message_id)
-                    self.add_message(Message(message.message_id, message.content, role))
+                    self.add_message(Message(message.message_id, message.content, i.role))
                     break
             self.write_history()
         self.usable = True
