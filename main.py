@@ -16,12 +16,13 @@ from character.history import History, Message
 from character.defaults import MawPrompts
 from character.tools import Tool, DanteTool
 
-from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook
+from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, get_history
 
 client, token, dev_mode, dante_id = init()
 owner = None
 tokens = 0
 run_time = 0
+histories = {}
 hooks = {}
 
 cutoff = 1024 * 15
@@ -82,7 +83,8 @@ async def on_message(message):
     if maw_message and dev_check(dev_mode, owner, message.author):
         if perm_check(message.channel, message.guild.me, "send"):
             bot_message = await message.channel.send("...")
-            history = History(get_path("maw", "history", char_id=message.channel.id, server_id=message.guild.id if message.guild else None), MawPrompts.default)
+            history_path = get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)
+            history = get_history(history_path, histories, MawPrompts.default)
             prompt = str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: " + message.clean_content
             global character_queue
             tool = Tool()
@@ -96,7 +98,8 @@ async def on_message(message):
 async def on_raw_message_edit(payload):
     if payload.guild_id:
         if os.path.exists(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)):
-            history = History(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id), MawPrompts.default)
+            history_path = get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)
+            history = get_history(history_path, histories, MawPrompts.default)
             try:
                 if payload.cached_message and payload.cached_message.author.id == client.user.id:
                     return
@@ -113,7 +116,8 @@ async def on_raw_message_edit(payload):
 async def on_raw_message_delete(payload):
     if payload.guild_id:
         if os.path.exists(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)):
-            history = History(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id), MawPrompts.default)
+            history_path = get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)
+            history = get_history(history_path, histories, MawPrompts.default)
             history.remove_message(payload.message_id)
 
 @client.event
