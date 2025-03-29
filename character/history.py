@@ -34,6 +34,8 @@ class History:
             if verbose: print("adding system message")
             self.add_message(Message(0, self.sys, "system"))
             if verbose: print("(sys):", self.history)
+    def renew_sys(self):
+        self.edit_message(Message(0, self.sys, "system"))
     def write_history(self):
         if verbose: print("write_history called")
         if verbose: print("(write):", self.history)
@@ -58,18 +60,16 @@ class History:
         else:
             while self.wait:
                 time.sleep(0.01)
-        if os.path.isfile(self.path):
-            self.wait = True
-            with open(self.path, "r") as file:
-                for line in file:
-                    line = line.replace("\n", "")
-                    line = line.split("|")
-                    role, message_id, content = role_trans_rev[line[0].strip()], int(line[1]), "".join(line[2:]).replace(r"\\n", "\n")
-                    history.append(Message(message_id, content, role))
-            self.wait = False
-        else:
+        if not os.path.isfile(self.path):
             self.touch_history()
-            history = self.read_history(limit=limit, usable=usable)
+        self.wait = True
+        with open(self.path, "r") as file:
+            for line in file:
+                line = line.replace("\n", "")
+                line = line.split("|")
+                role, message_id, content = role_trans_rev[line[0].strip()], int(line[1]), "".join(line[2:]).replace(r"\\n", "\n")
+                history.append(Message(message_id, content, role))
+        self.wait = False
         self.history = history
         if verbose: print("(read):", self.history)
         if limit != None:
