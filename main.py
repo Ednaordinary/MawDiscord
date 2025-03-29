@@ -83,7 +83,7 @@ async def on_message(message):
     if maw_message and dev_check(dev_mode, owner, message.author):
         if perm_check(message.channel, message.guild.me, "send"):
             bot_message = await message.channel.send("...")
-            history_path = get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)
+            history_path = get_path("maw", "history", char_id=message.channel.id, server_id=message.guild.id)
             history = get_history(history_path, histories, MawPrompts.default)
             prompt = str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: " + message.clean_content
             global character_queue
