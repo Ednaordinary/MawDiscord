@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import nextcord as discord
 import os
 import torch
+from character.history import History
 
 def init():
     load_dotenv()
@@ -81,3 +82,13 @@ def get_hook(channel, hooks, loop, client_id):
         hook = asyncio.run_coroutine_threadsafe(coro=channel.create_webhook(name="Character hook"), loop=client.loop).result()
         hooks[channel.id] = hook
     return hook
+
+def get_history(path, histories, sys):
+    try:
+        history = histories[path]
+        history.sys = sys
+        history.renew_sys()
+    except:
+        history = History(path, sys)
+        histories[path] = history
+    return history
