@@ -118,7 +118,7 @@ class ScrollRedoView(discord.ui.View):
                 else:
                     child.disabled = False
             elif child.label == "🖊️":
-                if self.edit == False:
+                if self.edit == False or not self.menu:
                     self.children = [x for x in self.children if x != child]
                 elif self.completed[self.idx]:
                     child.disabled = False
@@ -168,7 +168,7 @@ class ScrollRedoView(discord.ui.View):
         self.show_menu = not self.show_menu 
         self.handle_disabled()
         await interaction.response.edit_message(view=self)
-    @discord.ui.button(label="🖊️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(row=3, label="🖊️", style=discord.ButtonStyle.primary)
     async def edit_message(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.send_modal(EditModal(self.answers[self.idx], interaction.message.id, "assistant", self.history))
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.primary)
