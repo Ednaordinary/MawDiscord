@@ -23,6 +23,9 @@ def run_handler(idx, engine, history, view, token_count):
     except Exception as e:
         print("Error in handler")
         print(e)
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno)
         print(repr(e))
     view.complete_answer(idx)
     if verbose: print("Handler", idx, "exit")
@@ -57,6 +60,7 @@ class CharacterRequest(Request):
     def is_server(self):
         return True if self.message.guild != None else None
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
+        self.history.workers.append(int(self.bot_message.id))
         self.history.add_message(Message(self.message.id, self.prompt, "user"))
         tool_prompt = self.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
         self.history.edit_message(Message(0, tool_prompt, "system"))
@@ -73,8 +77,9 @@ class CharacterRequest(Request):
         for i in threads:
             i.join()
         return token_count.get()
+        self.history.workers.remove(int(self.bot_message.id))
     def update_progress(self, content, discord_loop):
-        asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content), loop=discord_loop)
+        asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content=content), loop=discord_loop)
 
 class ScrollRequest(CharacterRequest):
     def __init__(self, message, bot_message, prompt, cutoff, tools, edit, view, idxs):
@@ -82,6 +87,7 @@ class ScrollRequest(CharacterRequest):
         self.view = view
         self.idxs = idxs
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
+        self.history.workers.append(int(self.bot_message.id))
         self.history.add_message(Message(self.message.id, self.prompt, "user"))
         history = self.view.history.to_tokenizer(limit=self.message.id)
         history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
@@ -95,6 +101,7 @@ class ScrollRequest(CharacterRequest):
         for i in threads:
             i.join()
         return token_count.get()
+        self.history.workers.remove(int(self.bot_message.id))
     def update_progress(self, content, discord_loop):
         if self.view.get_idx() in self.idxs:
-            asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content), loop=discord_loop)
+            asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content=content), loop=discord_loop)
