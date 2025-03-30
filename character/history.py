@@ -4,7 +4,7 @@ import os
 role_trans = {"user": "u", "system": "s", "assistant": "c"}
 role_trans_rev = {"u": "user", "s": "system", "c": "assistant"}
 
-verbose = False
+verbose = True
 
 class Message:
     def __init__(self, message_id, content, role):
@@ -20,9 +20,10 @@ class History:
     def __init__(self, path, sys=None):
         self.history = []
         self.path = path
-        self.sys = sys
+        self.sys = sys if sys != None else self.get_sys()
         self.wait = False
         self.usable = True
+        self.workers = []
     def touch_history(self):
         if verbose: print("touch_history called")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -34,6 +35,12 @@ class History:
             if verbose: print("adding system message")
             self.add_message(Message(0, self.sys, "system"))
             if verbose: print("(sys):", self.history)
+    def get_sys(self):
+        self.read_history()
+        for x in self.history:
+            if x.message_id == 0:
+                return x.content
+        return None
     def renew_sys(self):
         self.edit_message(Message(0, self.sys, "system"))
     def write_history(self):
