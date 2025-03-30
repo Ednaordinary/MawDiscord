@@ -1,8 +1,9 @@
+from character.history import History
 from dotenv import load_dotenv
 import nextcord as discord
-import os
+import asyncio
 import torch
-from character.history import History
+import os
 
 def init():
     load_dotenv()
@@ -34,13 +35,13 @@ def get_path(path_type="maw", data_type = "history", char_id=None, server_id=Non
             if data_type == "history":
                 return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/history.txt"
             if data_type == "config":
-                return "data/server/" + str(server_id) + "/char/" + str(char_id) + "config.txt"
+                return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/config.txt"
     else: return None
 
 def get_all_chars(server_id):
     chars = []
     try:
-        for i in os.listdir("data/server/" + str(server_id) + "/char/"):
+        for i in os.listdir("data/servers/" + str(server_id) + "/char/"):
             try:
                 chars.append(int(i))
             except:
@@ -75,20 +76,43 @@ def get_hook(channel, hooks, loop, client_id):
     try:
         hook = hooks[channel.id]
     except:
-        all_hooks = asyncio.run_coroutine_threadsafe(coro=channel.webhooks(), loop=client.loop).result()
+        all_hooks = asyncio.run_coroutine_threadsafe(coro=channel.webhooks(), loop=loop).result(timeout=2)
         for each_hook in all_hooks:
             if each_hook.user.id == client_id:
-                asyncio.run_coroutine_threadsafe(coro=each_hook.delete(), loop=client.loop)
-        hook = asyncio.run_coroutine_threadsafe(coro=channel.create_webhook(name="Character hook"), loop=client.loop).result()
+                asyncio.run_coroutine_threadsafe(coro=each_hook.delete(), loop=loop)
+        hook = asyncio.run_coroutine_threadsafe(coro=channel.create_webhook(name="Character hook"), loop=loop).result(timeout=3)
+        hooks[channel.id] = hook
+    return hook
+
+async def async_get_hook(channel, hooks, client_id):
+    try:
+        hook = hooks[channel.id]
+    except:
+        print("getting current hooks")
+        all_hooks = await channel.webhooks()
+        for each_hook in all_hooks:
+            if each_hook.user.id == client_id:
+                print("deleting an old hook")
+                await each_hook.delete()
+        print("making a new hook")
+        hook = await channel.create_webhook(name="Character hook")
         hooks[channel.id] = hook
     return hook
 
 def get_history(path, histories, sys):
     try:
         history = histories[path]
-        history.sys = sys
-        history.renew_sys()
+        if sys != None:
+            history.sys = sys
+            history.renew_sys()
     except:
         history = History(path, sys)
         histories[path] = history
     return history
+
+def relative_time(time):
+    discord_epoch = 1420070400000
+    epoch_offset = time >> 22
+    epoch_time = (discord_epoch + epoch_offset) / 1000
+    print(epoch_time)
+    return "<t:" + str(int(epoch_time)) + ":R>"
