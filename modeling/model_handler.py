@@ -38,9 +38,9 @@ class ModelHandler:
             last_prog = None
             while self.allocation_lock == True:
                 time.sleep(0.02)
-                if not self.prog == last_prog:
-                    last_prog = self.prog
-                    yield self.prog
+                if not self.progress == last_prog:
+                    last_prog = self.progress
+                    yield self.progress
             yield self.model
     def deallocate(self):
         self.users -= 1
@@ -119,3 +119,22 @@ class Exl2ModelHandlerLazy(Exl2ModelHandler):
                 vram.deallocate("Maw")
         else:
             self.current_timeout = self.timeout + time.perf_counter()
+
+class Exl3ModelHandler(Exl2ModelHandler):
+    def __init__(self, model_id, cache_size, cache_bits, loop):
+        super().__init__()
+        self.model_id = model_id
+        self.cache_size = cache_size
+        self.cache_bits = cache_bits
+        self.loop = loop
+        self.load_progress = Queue()
+    def _load(self):
+        try:
+            self.model = Exl3Engine(self.model_id, self.cache_size, self.cache_impl, self.loop, self.load_callback)
+        except Exception as e:
+            print(repr(e))
+        self.load_progress.put(True)
+        print()
+
+class Exl3ModelHandlerLazy(Exl3ModelHandler, Exl2ModelHandlerLazy):
+    pass
