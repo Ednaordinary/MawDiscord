@@ -30,14 +30,23 @@ def run_handler(idx, engine, history, view, token_count):
     view.complete_answer(idx)
     if verbose: print("Handler", idx, "exit")
 
-async def get_scroll_view(history, user_message, bot_message, prompt, tools, edit, queue, loop, cutoff, continue_request):
-    return ScrollRedoView([""]*5, history, user_message, bot_message, prompt, tools, edit=edit, queue=queue, loop=loop, cutoff=cutoff, continue_request=continue_request)
+async def get_scroll_view(context, tools, edit, queue, loop, cutoff, continue_request):
+    # answers, history, user_message, message, prompt, tools, idx, edit, queue, loop, timeout, cutoff, continue_request
+    view_kwargs = dict("answers": [""]*5, "context": context, "tools": tools, "edit": edit, "queue": queue, "loop": loop, "cutoff": cutoff, "continue_request": continue_request)
+    return ScrollRedoView(**view_kwargs)
 
 class Request:
-    def __init__(self):
-        pass
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
     def handle(self):
         pass
+
+class RequestContext:
+    def __init__(self, message, bot_message, history, prompt):
+        self.message = message
+        self.bot_message = bot_message
+        self.history = history
+        self.prompt = prompt
 
 class TokenCount():
     def __init__(self):
@@ -48,23 +57,13 @@ class TokenCount():
         return self.tokens
 
 class CharacterRequest(Request):
-    def __init__(self, message, bot_message, history, prompt, cutoff, tools, edit):
-        self.message = message
-        self.bot_message = bot_message
-        self.channel = message.channel
-        self.history = history
-        self.prompt = prompt
-        self.cutoff = cutoff
-        self.tools = tools
-        self.edit = edit
-    def is_server(self):
-        return True if self.message.guild != None else None
+    # __init__: message, bot_message, history, prompt, cutoff, tools, edit
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
-        self.history.workers.append(int(self.bot_message.id))
-        self.history.add_message(Message(self.message.id, self.prompt, "user"))
+        self.history.workers.append(int(self.context.bot_message.id))
+        self.history.add_message(Message(self.context.message.id, self.prompt, "user"))
         tool_prompt = self.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
         self.history.edit_message(Message(0, tool_prompt, "system"))
-        view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.history, self.message, self.bot_message, self.prompt, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest), loop=discord_loop).result()
+        view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.context, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest), loop=discord_loop).result()
         history = self.history.to_tokenizer(limit=self.message.id)
         history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
         threads = []
@@ -81,11 +80,8 @@ class CharacterRequest(Request):
     def update_progress(self, content, discord_loop):
         asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content=content), loop=discord_loop)
 
-class ScrollRequest(CharacterRequest):
-    def __init__(self, message, bot_message, prompt, cutoff, tools, edit, view, idxs):
-        super().__init__(message, bot_message, view.history, prompt, cutoff, tools, edit)
-        self.view = view
-        self.idxs = idxs
+class ScrollRequest(Request):
+    # __init__: # message, bot_message, prompt, cutoff, tools, edit, view, idxs
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
         self.history.workers.append(int(self.bot_message.id))
         self.history.add_message(Message(self.message.id, self.prompt, "user"))
