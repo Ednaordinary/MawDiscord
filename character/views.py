@@ -11,28 +11,9 @@ verbose = True
 think_regex = re.compile(r'.*?<\/think>', flags=re.DOTALL)
 
 class ScrollRedoView(discord.ui.View):
-    def __init__(self, answers, history, user_message, message, prompt, tools, idx=0, edit=True, queue=None, loop=None, timeout = None, cutoff=None, continue_request=None):
-        super().__init__(timeout=timeout)
-        self.answers = answers
-        self.history = history
-        self.user_message = user_message
-        self.message = message
-        self.prompt = prompt
-        self.tools = tools
-        self.completed = [False]*len(answers)
-        self.idx = idx
-        self.edit = edit
-        self.limiter = time.perf_counter()
-        self.runtools = self.get_runtools()
-        self.menu = self.get_menu()
-        self.edit_button = self.get_edit_button()
-        self.thought_button = self.get_thought_button()
-        self.show_menu = False
-        self.handle_disabled()
-        self.queue = queue
-        self.loop = loop
-        self.cutoff = cutoff
-        self.continue_request = continue_request
+    def __init__(self, **kwargs):
+        # answers, context, tools, idx, edit, queue, loop, timeout, cutoff, continue_request
+        self.__dict__.update(kwargs)
     def get_idx(self):
         return self.idx
     def set_idx(self):
@@ -40,14 +21,14 @@ class ScrollRedoView(discord.ui.View):
     def update_answer(self, idx, updated, limit=True):
         self.answers[idx] = updated
         if idx == self.idx:
-            limiter = math.log(len(set(self.history.workers)) + 3)
+            limiter = math.log(len(set(self.context.history.workers)) + 3)
             if self.limiter + limiter < time.perf_counter() or limit == False:
-                self.history.edit_message(Message(self.message.id, updated, "assistant"))
+                self.context.history.edit_message(Message(self.context.bot_message.id, updated, "assistant"))
                 answer = self.get_answer()
                 if verbose: print("Editing for", idx, "|", answer[:10])
                 self.handle_disabled()
                 try:
-                    asyncio.run_coroutine_threadsafe(self.message.edit(content=answer[:1999], view=self), self.loop).result()
+                    asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(content=answer[:1999], view=self), self.loop).result()
                 except Exception as e:
                     print(e)
                     print(repr(e))
@@ -57,9 +38,9 @@ class ScrollRedoView(discord.ui.View):
         self.handle_disabled()
         answer = self.get_answer()
         if self.idx == idx:
-            asyncio.run_coroutine_threadsafe(self.message.edit(content=answer[:1999], view=self), self.loop)
+            asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(content=answer[:1999], view=self), self.loop)
         elif self.completed[self.idx]:
-            asyncio.run_coroutine_threadsafe(self.message.edit(view=self), self.loop)
+            asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(view=self), self.loop)
     def get_runtools(self):
         for child in self.children:
             if not isinstance(child, discord.ui.Button):
@@ -87,7 +68,7 @@ class ScrollRedoView(discord.ui.View):
             idxs = [x + len(self.answers) for x in range(5)]
             self.answers.extend([""]*5)
             self.completed.extend([False]*5)
-            scroll_request = self.continue_request(self.user_message, self.message, self.prompt, self.cutoff, self.tools, self.edit, self, idxs)
+            scroll_request = self.continue_request(self.context.message, self.context.bot_message, self.context.prompt, self.cutoff, self.tools, self.edit, self, idxs)
             self.queue.put(scroll_request)
         if self.menu not in self.children:
             self.children.append(self.menu)
@@ -154,7 +135,7 @@ class ScrollRedoView(discord.ui.View):
         self.handle_disabled()
         answer = self.get_answer()
         message = Message(interaction.message.id, answer, "assistant")
-        self.history.edit_message(message)
+        self.context.history.edit_message(message)
         await interaction.response.edit_message(content=answer[:1999] if answer != "" else "", view=self)
     @discord.ui.button(label="1", style=discord.ButtonStyle.grey)
     async def number(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -163,14 +144,14 @@ class ScrollRedoView(discord.ui.View):
         await interaction.response.edit_message(view=self)
     @discord.ui.button(row=3, label="🖊️", style=discord.ButtonStyle.primary)
     async def edit_message(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_modal(EditModal(self.answers[self.idx], interaction.message.id, "assistant", self.history))
+        await interaction.response.send_modal(EditModal(self.answers[self.idx], interaction.message.id, "assistant", self.context.history))
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.primary)
     async def scroll_forward(self, button: discord.ui.Button, interaction: discord.Interaction):
         self.idx += 1
         self.handle_disabled()
         answer = self.get_answer()
         message = Message(interaction.message.id, answer, "assistant")
-        self.history.edit_message(message)
+        self.context.history.edit_message(message)
         await interaction.response.edit_message(content=answer[:1999] if answer != "" else "...", view=self)
     @discord.ui.button(label="▶️", style=discord.ButtonStyle.green)
     async def run_tools(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -188,7 +169,7 @@ class ScrollRedoView(discord.ui.View):
         self.handle_disabled()
         answer = self.get_answer()
         message = Message(interaction.message.id, answer, "assistant")
-        self.history.edit_message(message)
+        self.context.history.edit_message(message)
         await interaction.response.edit_message(content=answer[:1999] if answer != "" else "...", view=self)
     @discord.ui.button(row=3, label="💭", style=discord.ButtonStyle.grey)
     async def send_thoughts(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -200,7 +181,7 @@ class EditModal(discord.ui.Modal):
         self.original_content = original_content
         self.message_id = message_id
         self.role = role
-        self.history = history
+        self.context.history = history
         self.content = discord.ui.TextInput(
             label="Message",
             style=discord.TextInputStyle.paragraph,
@@ -214,32 +195,32 @@ class EditModal(discord.ui.Modal):
         
     async def callback(self, interaction: discord.Interaction):
         message = Message(self.message_id, self.content.value, self.role)
-        self.history.edit_message(message)
+        self.context.history.edit_message(message)
         await interaction.response.edit_message(content=self.content.value)
 
 class EditButton(discord.ui.View):
     def __init__(self, history, role, message_id=None):
         super().__init__(timeout=None)
-        self.history = history
+        self.context.history = history
         self.role = role
         self.message_id = message_id
 
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.blurple)
     async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        edit_modal = EditModal(interaction.message.content, (self.message_id if self.message_id != None else interaction.message.id), self.role, self.history)
+        edit_modal = EditModal(interaction.message.content, (self.message_id if self.message_id != None else interaction.message.id), self.role, self.context.history)
         await interaction.response.send_modal(edit_modal)
 
 class ResetContextButton(discord.ui.View):
     def __init__(self, *, timeout=None, history):
         super().__init__(timeout=timeout)
-        self.history = history
+        self.context.history = history
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.red)
     async def reset_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         ignored_ids = [0]
-        if len([x for x in self.history.history if x not in ignored_ids]) > 0:
+        if len([x for x in self.context.history.history if x not in ignored_ids]) > 0:
             await interaction.response.edit_message(content="Context deleted.", view=None)
-            self.history.touch_history()
+            self.context.history.touch_history()
         else:
             await interaction.response.edit_message(content="No context found to delete.", view=None)
 
