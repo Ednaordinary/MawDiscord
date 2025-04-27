@@ -1,24 +1,24 @@
-from exllamav2.generator import ExLlamaV2Sampler
-from exllamav2 import ExLlamaV2Cache_Q4
 from queue import Queue
-import nextcord as discord
 import threading
 import asyncio
 import time
 import os
 
-from modeling.model_handler import Exl2ModelHandlerLazy
-from modeling.exl2model import Exl2Loop
+import nextcord as discord
+
+from modeling.model_handler import Exl3ModelHandlerLazy
+from modeling.counter import RequestsCounter
+from modeling.exl3model import Exl3Loop
 from modeling.tokenize import Tokenizer
 
-from character.request import CharacterRequest
-from character.history import History, Message
-from character.config import Config
-from character.defaults import MawPrompts
-from character.tools import Tool, DanteTool
 from character.views import ResetContextButton, CharacterModal, HookMessage
+from character.request import CharacterRequest, RequestContext
+from character.history import History, Message
+from character.tools import Tool, DanteTool
+from character.defaults import MawPrompts
+from character.config import Config
 
-from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, async_get_hook, get_history, relative_time
+from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, async_get_hook, get_history, relative_time, make_status, try_get_history
 
 client, token, dev_mode, dante_id = init()
 owner = None
@@ -26,10 +26,11 @@ tokens = 0
 run_time = 0
 histories = {}
 hooks = {}
+requests_counter = RequestsCounter("data/req.bin")
 
 cutoff = 1024 * 15
-model_loop = Exl2Loop()
-model_handler = Exl2ModelHandlerLazy("dr1-32b-abliterated-exl2-4.0bpw-hb8", 1024 * 35, ExLlamaV2Cache_Q4, model_loop)
+model_loop = Exl3Loop()
+model_handler = Exl3ModelHandlerLazy("qwq-32b-exl2-3.5bpw-hb6", 1024 * 35, (4, 4), model_loop)
 tokenizer = Tokenizer("deepseek-ai/DeepSeek-R1-Distill-Qwen-32B")
 
 character_queue = Queue()
@@ -39,7 +40,7 @@ def handler(to_handle):
     global handlers, tokens, run_time
     handlers += 1
     if run_time != 0:
-        activity = discord.Activity(type=discord.ActivityType.watching, name="at " + str(int(tokens / run_time)) + " avg tps")
+        activity = make_status(tokens, runtime, requests_counter.get())
         asyncio.run_coroutine_threadsafe(coro=client.change_presence(activity=activity, status=discord.Status.online), loop=client.loop)
     else:
         asyncio.run_coroutine_threadsafe(coro=client.change_presence(status=discord.Status.online), loop=client.loop)
@@ -62,7 +63,7 @@ def handler(to_handle):
     handlers -= 1
     if handlers == 0:
         if run_time != 0:
-            activity = discord.Activity(type=discord.ActivityType.watching, name="at " + str(int(tokens / run_time)) + " avg tps")
+            activity = make_status(tokens, runtime, requests_counter.get())
         asyncio.run_coroutine_threadsafe(coro=client.change_presence(status=discord.Status.idle, activity=activity), loop=client.loop)
 
 def character_watcher():
@@ -79,7 +80,6 @@ async def on_message(message):
     if message.type != discord.MessageType.default and message.type != discord.MessageType.reply or message.author.id == client.user.id or message.webhook_id != None:
         return
     if isinstance(message.channel, discord.Thread) and message.channel.id in get_all_chars(message.guild.id):
-        print("char message registered")
         char_message = True
     elif "maw," in message.content.lower() or "<@" + str(client.user.id) + ">" in message.content or is_referring(message, client.user):
         maw_message = True
@@ -92,7 +92,9 @@ async def on_message(message):
             global character_queue
             tool = Tool()
             dante_tool = DanteTool(async_get_hook, dante_id, perm_check, message.channel, hooks, client.loop, client.user.id)
-            character_queue.put(CharacterRequest(message, bot_message, history, prompt, cutoff, [tool, dante_tool], False))
+            context = RequestContext(message, bot_message, history, prompt)
+            req_kwargs = dict("context": context, "cutoff": cutoff, "tools": [tool, dante_tool], "edit": False)
+            character_queue.put(CharacterRequest(req_kwargs))
     elif maw_message:
         if perm_check(message.channel, message.guild.me, "send"):
             await message.channel.send("### >>> Maw is in dev mode. Please come back later.")
@@ -114,24 +116,14 @@ async def on_message(message):
 @client.event
 async def on_raw_message_edit(payload):
     if payload.guild_id:
-        edit = False
-        if os.path.exists(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)):
-            history_path = get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)
-            history = get_history(history_path, histories, MawPrompts.default)
-            edit = True
-        elif os.path.exists(get_path("char", "history", char_id=payload.channel_id, server_id=payload.guild_id)):
-            history_path = get_path("char", "history", char_id=payload.channel_id, server_id=payload.guild_id)
-            history = get_history(history_path, histories, None)
-            edit = True
-        if edit:
+        history = try_get_history(payload.channel_id, payload.guild_id)
+        if history != None:
             try:
                 if payload.cached_message and payload.cached_message.author.id == client.user.id:
                     return
                 channel = client.get_channel(payload.channel_id)
                 message = await channel.fetch_message(payload.message_id)
-                if message.author.id == client.user.id:
-                    return
-                if message.webhook_id != None:
+                if message.author.id == client.user.id or message.webhook_id != None:
                     return
             except:
                 pass
@@ -141,13 +133,8 @@ async def on_raw_message_edit(payload):
 @client.event
 async def on_raw_message_delete(payload):
     if payload.guild_id:
-        if os.path.exists(get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)):
-            history_path = get_path("maw", "history", char_id=payload.channel_id, server_id=payload.guild_id)
-            history = get_history(history_path, histories, MawPrompts.default)
-            history.remove_message(payload.message_id)
-        elif os.path.exists(get_path("char", "history", char_id=payload.channel_id, server_id=payload.guild_id)):
-            history_path = get_path("char", "history", char_id=payload.channel_id, server_id=payload.guild_id)
-            history = get_history(history_path, histories, None)
+        history = try_get_history(payload.channel_id, payload.guild_id)
+        if history != None:
             history.remove_message(payload.message_id)
 
 @client.event
