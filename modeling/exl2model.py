@@ -42,9 +42,9 @@ class Exl2Engine:
             self.draft_model = None
         self.tokenizer = ExLlamaV2Tokenizer(self.config)
         self.engineloop = loop
-        asyncio.run_coroutine_threadsafe(self._get_gen(cache_impl, cache_size), loop=self.engineloop.loop).result()
+        asyncio.run_coroutine_threadsafe(self._get_gen(), loop=self.engineloop.loop).result()
 
-    async def _get_gen(self, cache_impl, cache_size):
+    async def _get_gen(self):
         if self.draft_model:
             self.generator = ExLlamaV2DynamicGeneratorAsync(
                 model = self.model,
