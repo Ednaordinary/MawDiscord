@@ -1,38 +1,40 @@
-from exllamav2.generator import ExLlamaV2Sampler
-from .views import ScrollRedoView
-from .history import Message
 from queue import Queue
 import threading
+import traceback
 import asyncio
 import random
 import time
+import sys
+import os
 
-verbose = False
+from exllamav3 import ComboSampler
+
+from .views import ScrollRedoView
+from .history import Message
+
+verbose = True
 
 def run_handler(idx, engine, history, view, token_count):
     if verbose: print("Running handler", idx)
     try:
         temp = random.randint(500, 700) / 1000
-        sampler = ExLlamaV2Sampler.Settings(temperature=temp, min_p=0.02, xtc_threshold=0.05, xtc_probability=0.5, top_k=50, top_p=0.95, token_repetition_penalty=1.0, dry_allowed_length=2, dry_multiplier=0.8, dry_base=1.75, dry_sequence_breakers=["\n", ":", "\"", "*"])
+        sampler = ComboSampler(temperature=temp, min_p=0.1, top_k=30, top_p=0.95, rep_p=1.0)
         answer = ""
-        for i in engine.generate(history, add_bos=False, stop_token="<｜end▁of▁sentence｜>", max_tokens=1024, sampler=sampler):
+        for i in engine.generate(history, add_bos=False, stop_token="<|im_end|>", max_tokens=4096, sampler=sampler):
             token_count.inc()
             answer += i
             view.update_answer(idx, answer)
         view.update_answer(idx, answer, limit=False)
     except Exception as e:
         print("Error in handler")
-        print(e)
-        exc_type, exc_obj, exc_tb = sys.exc_info()
-        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-        print(exc_type, fname, exc_tb.tb_lineno)
-        print(repr(e))
+        print(traceback.format_exc())
     view.complete_answer(idx)
+    token_count.req_count.inc()
     if verbose: print("Handler", idx, "exit")
 
-async def get_scroll_view(context, tools, edit, queue, loop, cutoff, continue_request):
-    # answers, history, user_message, message, prompt, tools, idx, edit, queue, loop, timeout, cutoff, continue_request
-    view_kwargs = dict("answers": [""]*5, "context": context, "tools": tools, "edit": edit, "queue": queue, "loop": loop, "cutoff": cutoff, "continue_request": continue_request)
+async def get_scroll_view(context, tools, edit, queue, loop, cutoff, continue_request, req_count):
+    # answers, history, user_message, message, prompt, tools, idx, edit, queue, loop, timeout, cutoff, continue_request, req_count
+    view_kwargs = {"answers": [""]*5, "context": context, "tools": tools, "edit": edit, "queue": queue, "loop": loop, "timeout": None, "cutoff": cutoff, "continue_request": continue_request, "req_count": req_count}
     return ScrollRedoView(**view_kwargs)
 
 class Request:
@@ -49,25 +51,26 @@ class RequestContext:
         self.prompt = prompt
 
 class TokenCount():
-    def __init__(self):
+    def __init__(self, req_count):
         self.tokens = 0
+        self.req_count = req_count
     def inc(self):
         self.tokens += 1
     def get(self):
         return self.tokens
 
 class CharacterRequest(Request):
-    # __init__: message, bot_message, history, prompt, cutoff, tools, edit
+    # __init__: context, cutoff, tools, edit, req_count
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
-        self.history.workers.append(int(self.context.bot_message.id))
-        self.history.add_message(Message(self.context.message.id, self.prompt, "user"))
-        tool_prompt = self.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
-        self.history.edit_message(Message(0, tool_prompt, "system"))
-        view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.context, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest), loop=discord_loop).result()
-        history = self.history.to_tokenizer(limit=self.message.id)
+        self.context.history.workers.append(int(self.context.bot_message.id))
+        self.context.history.add_message(Message(self.context.message.id, self.context.prompt, "user"))
+        tool_prompt = self.context.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
+        self.context.history.edit_message(Message(0, tool_prompt, "system"))
+        view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.context, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest, self.req_count), loop=discord_loop).result()
+        history = self.context.history.to_tokenizer(limit=self.context.message.id)
         history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
         threads = []
-        token_count = TokenCount()
+        token_count = TokenCount(self.req_count)
         for i in range(5):
             if verbose: print("Starting handler:", i)
             threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view, token_count]))
@@ -75,29 +78,32 @@ class CharacterRequest(Request):
             i.start()
         for i in threads:
             i.join()
+        self.context.history.workers.remove(int(self.context.bot_message.id))
         return token_count.get()
-        self.history.workers.remove(int(self.bot_message.id))
     def update_progress(self, content, discord_loop):
-        asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content=content), loop=discord_loop)
+        asyncio.run_coroutine_threadsafe(coro=self.context.bot_message.edit(content=content), loop=discord_loop)
 
 class ScrollRequest(Request):
-    # __init__: # message, bot_message, prompt, cutoff, tools, edit, view, idxs
+    # __init__: # context, view
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
-        self.history.workers.append(int(self.bot_message.id))
-        self.history.add_message(Message(self.message.id, self.prompt, "user"))
-        history = self.view.history.to_tokenizer(limit=self.message.id)
-        history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
-        threads = []
-        token_count = TokenCount()
-        for i in self.idxs:
-            if verbose: print("Starting handler", i)
-            threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view, token_count]))
-        for i in threads:
-            i.start()
-        for i in threads:
-            i.join()
-        return token_count.get()
-        self.history.workers.remove(int(self.bot_message.id))
+        try:
+            self.context.history.workers.append(int(self.context.bot_message.id))
+            self.context.history.add_message(Message(self.context.message.id, self.prompt, "user"))
+            history = self.context.history.to_tokenizer(limit=self.context.message.id)
+            history = tokenizer.history_to_tokens(history, cutoff=self.view.cutoff)
+            threads = []
+            token_count = TokenCount(self.view.req_count)
+            for i in self.view.idxs:
+                if verbose: print("Starting handler", i)
+                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view, token_count]))
+            for i in threads:
+                i.start()
+            for i in threads:
+                i.join()
+            self.context.history.workers.remove(int(self.context.bot_message.id))
+            return token_count.get()
+        except:
+            print(traceback.format_exc())
     def update_progress(self, content, discord_loop):
-        if self.view.get_idx() in self.idxs:
-            asyncio.run_coroutine_threadsafe(coro=self.bot_message.edit(content=content), loop=discord_loop)
+        if self.view.get_idx() in self.view.idxs:
+            asyncio.run_coroutine_threadsafe(coro=self.context.bot_message.edit(content=content), loop=discord_loop)
