@@ -1,6 +1,7 @@
 from exllamav3 import Model, Config, Cache, CacheLayer_quant, Tokenizer, AsyncGenerator, AsyncJob
 from multiprocessing import Queue
 import threading
+import traceback
 import asyncio
 import random
 import ctypes
@@ -11,6 +12,9 @@ import os
 
 libc = ctypes.CDLL("libc.so.6")
 
+def run_loop(loop):
+    loop.run_forever()
+
 class Exl3Loop:
     def __init__(self):
         self.loop = asyncio.new_event_loop()
@@ -20,14 +24,14 @@ class Exl3Loop:
 class Exl3Engine:
     def __init__(self, model_id, cache_size, quant, loop, callback):
         self.config = Config.from_directory(model_id)
-        self.model = Model(self.config)
+        self.model = Model.from_config(self.config)
         self.cache = Cache(self.model, max_num_tokens=cache_size, layer_type=CacheLayer_quant, k_bits=quant[0], v_bits=quant[1])
-        self.model.load(progress=False, callback=callback)
+        self.model.load(progressbar=False, callback=callback)
         self.tokenizer = Tokenizer.from_config(self.config)
         self.engineloop = loop
-        asyncio.run_coroutine_threadsafe(self._get_gen(cache_impl, cache_size), loop=self.engineloop.loop).result()
+        asyncio.run_coroutine_threadsafe(self._get_gen(), loop=self.engineloop.loop).result()
 
-    async def _get_gen(self, cache_impl, cache_size):
+    async def _get_gen(self):
         self.generator = AsyncGenerator(
             model = self.model,
             cache = self.cache,
@@ -54,10 +58,7 @@ class Exl3Engine:
                     queue.put(text)
         except Exception as e:
             print("Exception in engine:")
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            print(exc_type, fname, exc_tb.tb_lineno)
-            print(repr(e))
+            print(traceback.format_exc())
         queue.put(None)
     
     def generate(self, prompt, stop_token, sampler, add_bos=True, max_tokens=256):
