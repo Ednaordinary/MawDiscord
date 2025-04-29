@@ -6,7 +6,7 @@ import os
 
 import nextcord as discord
 
-from modeling.model_handler import Exl3ModelHandlerLazy
+from modeling.model_handler.exl3 import Exl3ModelHandlerLazy
 from modeling.counter import RequestsCounter
 from modeling.exl3model import Exl3Loop
 from modeling.tokenize import Tokenizer
@@ -30,8 +30,8 @@ requests_counter = RequestsCounter("data/req.bin")
 
 cutoff = 1024 * 15
 model_loop = Exl3Loop()
-model_handler = Exl3ModelHandlerLazy("qwq-32b-exl2-3.5bpw-hb6", 1024 * 35, (4, 4), model_loop)
-tokenizer = Tokenizer("deepseek-ai/DeepSeek-R1-Distill-Qwen-32B")
+model_handler = Exl3ModelHandlerLazy("qwq-32b-exl3-3.5bpw-hb6", 1024 * 72, (4, 4), model_loop)
+tokenizer = Tokenizer("Qwen/QwQ-32B")
 
 character_queue = Queue()
 handlers = 0
@@ -40,7 +40,7 @@ def handler(to_handle):
     global handlers, tokens, run_time
     handlers += 1
     if run_time != 0:
-        activity = make_status(tokens, runtime, requests_counter.get())
+        activity = make_status(tokens, run_time, requests_counter.get())
         asyncio.run_coroutine_threadsafe(coro=client.change_presence(activity=activity, status=discord.Status.online), loop=client.loop)
     else:
         asyncio.run_coroutine_threadsafe(coro=client.change_presence(status=discord.Status.online), loop=client.loop)
@@ -63,7 +63,7 @@ def handler(to_handle):
     handlers -= 1
     if handlers == 0:
         if run_time != 0:
-            activity = make_status(tokens, runtime, requests_counter.get())
+            activity = make_status(tokens, run_time, requests_counter.get())
         asyncio.run_coroutine_threadsafe(coro=client.change_presence(status=discord.Status.idle, activity=activity), loop=client.loop)
 
 def character_watcher():
@@ -93,8 +93,8 @@ async def on_message(message):
             tool = Tool()
             dante_tool = DanteTool(async_get_hook, dante_id, perm_check, message.channel, hooks, client.loop, client.user.id)
             context = RequestContext(message, bot_message, history, prompt)
-            req_kwargs = dict("context": context, "cutoff": cutoff, "tools": [tool, dante_tool], "edit": False)
-            character_queue.put(CharacterRequest(req_kwargs))
+            req_kwargs = {"context": context, "cutoff": cutoff, "tools": [tool, dante_tool], "edit": False, "req_count": requests_counter}
+            character_queue.put(CharacterRequest(**req_kwargs))
     elif maw_message:
         if perm_check(message.channel, message.guild.me, "send"):
             await message.channel.send("### >>> Maw is in dev mode. Please come back later.")
@@ -116,7 +116,7 @@ async def on_message(message):
 @client.event
 async def on_raw_message_edit(payload):
     if payload.guild_id:
-        history = try_get_history(payload.channel_id, payload.guild_id)
+        history = try_get_history(payload.channel_id, payload.guild_id, histories)
         if history != None:
             try:
                 if payload.cached_message and payload.cached_message.author.id == client.user.id:
@@ -133,7 +133,7 @@ async def on_raw_message_edit(payload):
 @client.event
 async def on_raw_message_delete(payload):
     if payload.guild_id:
-        history = try_get_history(payload.channel_id, payload.guild_id)
+        history = try_get_history(payload.channel_id, payload.guild_id, histories)
         if history != None:
             history.remove_message(payload.message_id)
 
@@ -152,6 +152,7 @@ async def reset(
     if os.path.exists(get_path("maw", "history", char_id=interaction.channel.id, server_id=interaction.guild.id)):
         history_path = get_path("maw", "history", char_id=interaction.channel.id, server_id=interaction.guild.id)
         history = get_history(history_path, histories, MawPrompts.default)
+        history.read_history()
         ignored_ids = [0]
         if len([x for x in history.history if x not in ignored_ids]) > 0:
             view = ResetContextButton(history=history)
