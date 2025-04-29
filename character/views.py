@@ -6,14 +6,32 @@ import time
 import re
 import math
 
-verbose = True
+verbose = False
 
-think_regex = re.compile(r'.*?<\/think>', flags=re.DOTALL)
+think_regex = re.compile(r'[\s\S]*?<\/think>')
+ans_regex = re.compile(r'<\/think>[\s\S]*', flags=re.M)
+
+def think_bar():
+    # spinner!
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    idx = int(time.perf_counter() / 1) 
+    frame = frames[(idx % len(frames))]
+    return frame
 
 class ScrollRedoView(discord.ui.View):
     def __init__(self, **kwargs):
         # answers, context, tools, idx, edit, queue, loop, timeout, cutoff, continue_request
         self.__dict__.update(kwargs)
+        super().__init__(timeout=self.timeout)
+        self.idx = 0
+        self.completed = [False]*len(self.answers)
+        self.limiter = time.perf_counter()
+        self.runtools = self.get_runtools()
+        self.menu = self.get_menu()
+        self.edit_button = self.get_edit_button()
+        self.thought_button = self.get_thought_button()
+        self.show_menu = False
+        self.handle_disabled()
     def get_idx(self):
         return self.idx
     def set_idx(self):
@@ -68,7 +86,8 @@ class ScrollRedoView(discord.ui.View):
             idxs = [x + len(self.answers) for x in range(5)]
             self.answers.extend([""]*5)
             self.completed.extend([False]*5)
-            scroll_request = self.continue_request(self.context.message, self.context.bot_message, self.context.prompt, self.cutoff, self.tools, self.edit, self, idxs)
+            req_kwargs = {"context": self.context, "view": self, "idxs": idxs}
+            scroll_request = self.continue_request(**req_kwargs)
             self.queue.put(scroll_request)
         if self.menu not in self.children:
             self.children.append(self.menu)
@@ -117,8 +136,15 @@ class ScrollRedoView(discord.ui.View):
         if idx == None:
             idx = self.idx
         answer = self.answers[idx]
-        for match in re.findall(think_regex, answer):
-            answer = answer.replace(match, "").strip()
+        search = re.search(ans_regex, answer)
+        ignore_strings = ["</think>", "<think>", "<tool_call>", "</tool_call>"]
+        if search != None:
+            answer = search.group(0)
+            for i in ignore_strings:
+                answer = answer.replace(i, "\n")
+            answer = answer.strip()
+        else:
+            answer = think_bar()
         if idx == self.idx and do_filter:
             for tool in self.tools:
                 answer = tool.filter(answer)
@@ -213,14 +239,14 @@ class EditButton(discord.ui.View):
 class ResetContextButton(discord.ui.View):
     def __init__(self, *, timeout=None, history):
         super().__init__(timeout=timeout)
-        self.context.history = history
+        self.history = history
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.red)
     async def reset_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         ignored_ids = [0]
-        if len([x for x in self.context.history.history if x not in ignored_ids]) > 0:
+        if len([x for x in self.history.history if x not in ignored_ids]) > 0:
             await interaction.response.edit_message(content="Context deleted.", view=None)
-            self.context.history.touch_history()
+            self.history.touch_history()
         else:
             await interaction.response.edit_message(content="No context found to delete.", view=None)
 
