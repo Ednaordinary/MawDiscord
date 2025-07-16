@@ -24,7 +24,7 @@ from character.defaults import MawPrompts
 from character.auto import SelfResponder
 from character.config import Config
 
-from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, async_get_hook, get_history, relative_time, make_status, try_get_history
+from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, async_get_hook, get_history, relative_time, make_status, try_get_history, FakeHistObj
 
 client, token, dev_mode, dante_id = init()
 owner = None
@@ -196,6 +196,15 @@ async def on_ready():
     global owner
     owner = await client.application_info()
     owner = owner.owner
+    # hydrate data paths and message cache
+    for guild in client.guilds:
+        for channel in [x for x in guild.channels if isinstance(x, discord.TextChannel)]:
+            obj = FakeHistObj(channel.id, guild.id)
+            config_path = get_path("maw", "config", obj)
+            config_file = Config(config_path)
+            history_path = get_path("maw", "history", obj)
+            history = get_history(history_path, histories, config_file)
+            history.read_history()
 
 @client.slash_command(description="Resets the context of Maw for the whole server (not including characters)")
 async def reset(
