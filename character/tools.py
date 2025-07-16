@@ -35,7 +35,7 @@ class DanteTool(Tool):
             hook = True
             for i in members:
                 if i.id == self.dante_id:
-                    if self.check_perm(self.channel, i, "send"):
+                    if self.check_perm(self.channel, self.channel.guild, "send"):
                         hook = False
             if hook:
                 print("getting hook")
