@@ -2,6 +2,7 @@ from queue import Queue
 import threading
 import traceback
 import asyncio
+import random
 import time
 import os
 
@@ -20,6 +21,7 @@ from character.request import CharacterRequest, RequestContext, ScrollRequest
 from character.history import History, Message
 from character.tools import Tool, DanteTool
 from character.defaults import MawPrompts
+from character.auto import SelfResponder
 from character.config import Config
 
 from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, async_get_hook, get_history, relative_time, make_status, try_get_history
@@ -45,6 +47,8 @@ tokenizer = Tokenizer("Qwen/Qwen3-30B-A3B")
 character_queue = Queue()
 handlers = 0
 
+auto_responder = SelfResponder(character_queue, client, cutoff, tokenizer)
+
 def handler(to_handle):
     try:
         global handlers, tokens, run_time
@@ -65,7 +69,9 @@ def handler(to_handle):
         if model == None:
             print("Model was not properly allocated")
             return
-        tokens += to_handle.handle(model, tokenizer, client.loop, character_queue)
+        new_tokens = to_handle.handle(model, tokenizer, client.loop, character_queue)
+        if new_tokens != None:
+            tokens += new_tokens 
         current_run_time = model_handler.deallocate()
         if current_run_time is not None:
             run_time += current_run_time 
@@ -85,22 +91,30 @@ def character_watcher():
         #if isinstance(current, CharacterRequest) or isinstance(current, ScrollRequest):
         threading.Thread(target=handler, args=[current]).start()
 
-def maw_send(message):
+async def maw_send(message, auto=False):
     if perm_check(message.channel, message.guild, "send"):
         config_path = get_path("maw", "config", message)
         config = Config(config_path)
-        bot_message = await message.channel.send("...")
+        if auto:
+            bot_message = await message.reply(content="...")
+        else:
+            bot_message = await message.channel.send("...")
         history_path = get_path("maw", "history", message)
         history = get_history(history_path, histories, config)
         if isinstance(message.channel, discord.DMChannel):
             prompt = str(message.author.global_name).strip() + " said: " + message.clean_content
         else:
             prompt = str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: " + message.clean_content
-        global character_queue
+        if auto:
+            history = history.to_unwatched()
+            msg_id = 9999999999999999999999999 # not preferable but does get a message to the bottom
+            auto_prompt = MawPrompts.reply_focus + prompt
+            history.add_message(Message(msg_id, auto_prompt, "user"))
         context = RequestContext(message, bot_message, history, prompt)
         tool = Tool()
         dante_tool = DanteTool(async_get_hook, dante_id, perm_check, message.channel, hooks, client.loop, client.user.id)
         tools = [tool, dante_tool] if not isinstance(message.channel, discord.DMChannel) else []
+        global character_queue
         req_kwargs = {"context": context, "cutoff": cutoff, "tools": tools, "edit": False, "req_count": requests_counter, "queue": character_queue}
         character_queue.put(CharacterRequest(**req_kwargs))
 
@@ -110,6 +124,7 @@ async def on_message(message):
     char_message = False
     if (message.type != discord.MessageType.default and message.type != discord.MessageType.reply) or message.author.id == client.user.id or message.webhook_id != None:
         return
+    auto_responder.log_message(message)
     if isinstance(message.channel, discord.Thread) and message.channel.id in get_all_chars(message.guild.id or None):
         char_message = True
     elif "maw," in message.content.lower() or "<@" + str(client.user.id) + ">" in message.content or is_referring(message, client.user) or isinstance(message.channel, discord.DMChannel):
@@ -135,6 +150,12 @@ async def on_message(message):
     elif char_message:
         if perm_check(message.channel, message.guild, "send"):
             await message.channel.send("### >>> Maw is in dev mode. Please come back later.")
+    rand_value = random.randint(1, 100)
+    print(rand_value)
+    if rand_value == 1:
+        print("Reading chat log")
+        for i in auto_responder.should_respond():
+            await maw_send(i, auto=True)
 
 @client.event
 async def on_raw_message_edit(payload):
@@ -194,6 +215,15 @@ async def reset(
             await interaction.response.send_message(content="No context found to delete.")
     else:
         await interaction.response.send_message("No context found to clear.")
+
+@client.slash_command(description="Forces an auto read (this is a debug action)")
+async def read(
+        interaction: discord.Interaction,
+):
+    await interaction.response.send_message("Reading...")
+    print("Reading chat log")
+    for i in auto_responder.should_respond():
+        await maw_send(i, auto=True)
 
 @client.slash_command(name="token")
 async def token_root(
