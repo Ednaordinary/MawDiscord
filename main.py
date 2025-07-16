@@ -82,8 +82,27 @@ def character_watcher():
     global character_queue
     while True:
         current = character_queue.get()
-        if isinstance(current, CharacterRequest) or isinstance(current, ScrollRequest):
-            threading.Thread(target=handler, args=[current]).start()
+        #if isinstance(current, CharacterRequest) or isinstance(current, ScrollRequest):
+        threading.Thread(target=handler, args=[current]).start()
+
+def maw_send(message):
+    if perm_check(message.channel, message.guild, "send"):
+        config_path = get_path("maw", "config", message)
+        config = Config(config_path)
+        bot_message = await message.channel.send("...")
+        history_path = get_path("maw", "history", message)
+        history = get_history(history_path, histories, config)
+        if isinstance(message.channel, discord.DMChannel):
+            prompt = str(message.author.global_name).strip() + " said: " + message.clean_content
+        else:
+            prompt = str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: " + message.clean_content
+        global character_queue
+        context = RequestContext(message, bot_message, history, prompt)
+        tool = Tool()
+        dante_tool = DanteTool(async_get_hook, dante_id, perm_check, message.channel, hooks, client.loop, client.user.id)
+        tools = [tool, dante_tool] if not isinstance(message.channel, discord.DMChannel) else []
+        req_kwargs = {"context": context, "cutoff": cutoff, "tools": tools, "edit": False, "req_count": requests_counter, "queue": character_queue}
+        character_queue.put(CharacterRequest(**req_kwargs))
 
 @client.event
 async def on_message(message):
@@ -96,23 +115,7 @@ async def on_message(message):
     elif "maw," in message.content.lower() or "<@" + str(client.user.id) + ">" in message.content or is_referring(message, client.user) or isinstance(message.channel, discord.DMChannel):
         maw_message = True
     if maw_message and dev_check(dev_mode, owner, message.author):
-        if perm_check(message.channel, message.guild, "send"):
-            config_path = get_path("maw", "config", message)
-            config = Config(config_path)
-            bot_message = await message.channel.send("...")
-            history_path = get_path("maw", "history", message)
-            history = get_history(history_path, histories, config)
-            if isinstance(message.channel, discord.DMChannel):
-                prompt = str(message.author.global_name).strip() + " said: " + message.clean_content
-            else:
-                prompt = str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: " + message.clean_content
-            global character_queue
-            tool = Tool()
-            dante_tool = DanteTool(async_get_hook, dante_id, perm_check, message.channel, hooks, client.loop, client.user.id)
-            context = RequestContext(message, bot_message, history, prompt)
-            tools_list = [tool, dante_tool] if not isinstance(message.channel, discord.DMChannel) else []
-            req_kwargs = {"context": context, "cutoff": cutoff, "tools": [tool, dante_tool], "edit": False, "req_count": requests_counter, "queue": character_queue}
-            character_queue.put(CharacterRequest(**req_kwargs))
+        maw_send(message)
     elif maw_message:
         if perm_check(message.channel, message.guild, "send"):
             await message.channel.send("### >>> Maw is in dev mode. Please come back later.")
