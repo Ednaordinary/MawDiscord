@@ -1,9 +1,11 @@
-from character.history import History
 from dotenv import load_dotenv
 import nextcord as discord
 import asyncio
 import torch
 import os
+
+from character.history import JsonHistory
+from character.defaults import MawPrompts
 
 def init():
     load_dotenv()
@@ -11,7 +13,7 @@ def init():
     dev_mode = True if os.getenv('DEV_MODE') == "1" else False
     dante_id = int(os.getenv('DANTE_ID'))
     intents = discord.Intents.all()
-    client = discord.AutoShardedClient(intents=intents)
+    client = discord.Client(intents=intents)
     discord.opus._load_default()
     os.environ["OMP_NUM_THREADS"] = "16"
     os.environ["TOKENIZERS_PARALLELISM"] = "1"
@@ -19,23 +21,33 @@ def init():
     torch.backends.cudnn.allow_tf32 = True
     return client, token, dev_mode, dante_id
 
-def get_path(path_type="maw", data_type = "history", char_id=None, server_id=None):
+def get_path(path_type="maw", data_type = "history", obj=None):
+    char_id = obj.channel.id
+    try:
+        server_id = obj.guild.id
+    except:
+        server_id = None
     if path_type == "maw":
         if char_id != None:
             if data_type == "history":
                 # Here, char_id is a channel
                 if server_id == None:
-                    return "data/dms/" + str(char_id) + "/history.txt"
+                    return "data/dms/" + str(char_id) + "/history.json"
                 else:
-                    return "data/servers/" + str(server_id) + "/" + str(char_id) + "/history.txt"
+                    return "data/servers/" + str(server_id) + "/" + str(char_id) + "/history.json"
+            if data_type == "config":
+                if server_id == None:
+                    return "data/dms/" + str(char_id) + "/config.json"
+                else:return "data/servers/" + str(server_id) + "/" + str(char_id) + "/config.json"
+                    
             else: return None
         else: return None
     elif path_type == "char":
         if char_id != None and server_id != None:
             if data_type == "history":
-                return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/history.txt"
+                return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/history.json"
             if data_type == "config":
-                return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/config.txt"
+                return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/config.json"
     else: return None
 
 def get_all_chars(server_id):
@@ -61,14 +73,17 @@ def is_referring(message, user):
 
 def dev_check(dev_mode, owner, user):
     if dev_mode:
-        if owner.id == user.id:
+        if owner != None and owner.id == user.id:
             return True
         else:
             return False
     else:
         return True
 
-def perm_check(channel, user, perm):
+def perm_check(channel, guild, perm):
+    if guild == None:
+        return True
+    user = guild.me
     if perm == "send":
         return channel.permissions_for(user).send_messages
 
@@ -99,16 +114,28 @@ async def async_get_hook(channel, hooks, client_id):
         hooks[channel.id] = hook
     return hook
 
-def get_history(path, histories, sys):
+def get_history(path, histories, config, char=False):
     try:
         history = histories[path]
-        if sys != None:
-            history.sys = sys
+        if config != None:
+            history.sys = config if (char or config == None) else update_sys(config, char)
             history.renew_sys()
     except:
-        history = History(path, sys)
+        history = JsonHistory(path, config if (char or config == None) else update_sys(config, char))
         histories[path] = history
     return history
+
+def update_sys(config_file, char):
+    sys = MawPrompts.default
+    config = config_file.get()
+    if not "personality" in config.keys():
+        config["personality"] = MawPrompts.default_personality
+    if not "style" in config.keys():
+        config["style"] = MawPrompts.style_short
+    config_file.write(config)
+    sys += "\n" + str(config["personality"])
+    sys += "\n" + str(config["style"])
+    return sys
 
 def relative_time(time):
     discord_epoch = 1420070400000
@@ -116,3 +143,31 @@ def relative_time(time):
     epoch_time = (discord_epoch + epoch_offset) / 1000
     print(epoch_time)
     return "<t:" + str(int(epoch_time)) + ":R>"
+
+def make_status(tokens, run_time, requests):
+    if run_time > 0:
+        activity = discord.Activity(type=discord.ActivityType.watching, name="at " + str(int(tokens / run_time)) + " avg tps | " + str(requests) + " requests handled")
+    else:
+        activity = discord.Activity(type=discord.ActivityType.watching, name="with " + str(requests) + " requests handled")
+    return activity
+
+class NestedObj:
+    def __init__(self):
+        pass
+
+class FakeHistObj:
+    def __init__(self, char_id, server_id):
+        self.guild = NestedObj()
+        self.guild.id = server_id
+        self.channel = NestedObj()
+        self.channel.id = char_id
+
+def try_get_history(char_id, server_id, histories):
+    history_path = None
+    if os.path.exists(get_path("maw", "history", FakeHistObj(char_id, server_id))):
+        history_path = get_path("maw", "history", FakeHistObj(char_id, server_id))
+    elif os.path.exists(get_path("char", "history", FakeHistObj(char_id, server_id))):
+        history_path = get_path("char", "history", FakeHistObj(char_id, server_id))
+    if history_path != None:
+        return get_history(history_path, histories, None)
+    else: return None
