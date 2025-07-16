@@ -1,10 +1,11 @@
-from multiprocessing import Queue
+from multiprocessing import Queue, Process
 import threading
 import traceback
 import asyncio
 import random
 import ctypes
 import torch
+import time
 import sys
 import gc
 import os
@@ -12,6 +13,8 @@ import os
 from exllamav3 import Model, Config, Cache, CacheLayer_quant, Tokenizer, AsyncGenerator, AsyncJob, ComboSampler
 
 libc = ctypes.CDLL("libc.so.6")
+
+resp_count = 1 # hard limit. will decrease generations even if higher in request and views. default 256
 
 def run_loop(self):
     try:
@@ -49,6 +52,7 @@ class Exl3Engine:
                 model = self.model,
                 cache = self.cache,
                 tokenizer = self.tokenizer,
+                max_batch_size = resp_count,
             )
         except:
             print(traceback.format_exc(), flush=True)
@@ -58,7 +62,7 @@ class Exl3Engine:
             job = AsyncJob(
                 self.generator,
                 max_new_tokens = max_tokens,
-                token_healing=False,
+                token_healing=True,
                 gen_settings=sampler,
                 decode_special_tokens=True,
                 input_ids = self.tokenizer.encode(prompt, add_bos = add_bos).to("cpu") if isinstance(prompt, str) else prompt.to("cpu"),
@@ -86,6 +90,22 @@ class Exl3Engine:
             print("Exception in engine:")
             print(traceback.format_exc())
         queue.put(False)
+        
+    async def _kickstart(self, prompt):
+        job = AsyncJob(
+            self.generator,
+            max_new_tokens = 100,
+            input_ids = self.tokenizer.encode(prompt, add_bos = add_bos).to("cpu") if isinstance(prompt, str) else prompt.to("cpu"),
+            seed=random.randint(1, 10000000),
+        )
+        count = 0
+        async for result in job:
+            count += 1
+            if count >= 3:
+                await job.cancel() # a few tokens have been generated, so by this point the pages should be shared
+        
+    def kickstart(self, prompt):
+        asyncio.run_coroutine_threadsafe(self._kickstart(prompt), self.engineloop.loop)
     
     def generate(self, prompt, stop_token, sampler, add_bos=True, max_tokens=256):
         queue = Queue()
