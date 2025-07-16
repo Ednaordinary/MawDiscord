@@ -16,7 +16,7 @@ from .history import Message
 
 verbose = True
 resp_count = 3
-stop_token = "<｜end▁of▁sentence｜>"
+#stop_token = "<｜end▁of▁sentence｜>"
 stop_token = "<|im_end|>"
 
 class SillySampler(ComboSampler):
@@ -120,7 +120,7 @@ class CharacterRequest(Request):
             tool_prompt = self.context.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
             self.context.history.edit_message(Message(0, tool_prompt, "system"))
             view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.context, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest, self.req_count), loop=discord_loop).result()
-            history = self.context.history.to_tokenizer(limit=self.context.message.id, includes="</think>")
+            history = self.context.history.to_tokenizer(limit=self.context.message.id)
             history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
             threads = []
             token_count = TokenCount(self.req_count)
@@ -166,5 +166,5 @@ class ScrollRequest(Request):
         except Exception as e:
             print(traceback.format_exc())
     def update_progress(self, content, discord_loop):
-        if self.view.get_idx() in list(range(self.view.answers)):
+        if self.view.get_idx() in list(range(len(self.view.answers))):
             asyncio.run_coroutine_threadsafe(coro=self.context.bot_message.edit(content=content), loop=discord_loop)
