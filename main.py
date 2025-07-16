@@ -150,12 +150,13 @@ async def on_message(message):
     elif char_message:
         if perm_check(message.channel, message.guild, "send"):
             await message.channel.send("### >>> Maw is in dev mode. Please come back later.")
-    rand_value = random.randint(1, 100)
-    print(rand_value)
-    if rand_value == 1:
-        print("Reading chat log")
-        for i in auto_responder.should_respond():
-            await maw_send(i, auto=True)
+    if not char_message:
+        rand_value = random.randint(1, 100)
+        print(rand_value)
+        if rand_value == 1:
+            print("Reading chat log")
+            for i in auto_responder.should_respond():
+                await maw_send(i, auto=True)
 
 @client.event
 async def on_raw_message_edit(payload):
