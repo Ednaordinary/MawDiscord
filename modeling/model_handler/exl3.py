@@ -8,6 +8,10 @@ from ..exl3model import Exl3Engine
 
 from .base import ModelHandler
 
+from ..vram import Vram
+
+vram = Vram()
+
 class Exl3ModelHandler(ModelHandler):
     def __init__(self, model_id, cache_size, cache_bits, loop):
         super().__init__()
@@ -37,11 +41,15 @@ class Exl3ModelHandler(ModelHandler):
             else:
                 yield prog
     def unload(self):
-        self.allocation_lock = True
-        self.model.end()
-        self.model = None
-        self.allocation_lock = False
-        self._vram_unload()
+        try:
+            self.allocation_lock = True
+            self.model.end()
+            self.model = None
+            self.allocation_lock = False
+            vram.deallocate("Maw")
+        except Exception as e:
+            print(repr(e))
+            print(traceback.format_exc())
 
 class Exl3ModelHandlerLazy(Exl3ModelHandler):
     def __init__(self, model_id, cache_size, cache_bits, loop, timeout=10 * 60):
@@ -59,23 +67,28 @@ class Exl3ModelHandlerLazy(Exl3ModelHandler):
             return time.perf_counter() - self.alloc_at
         else:
             return 0
-        self.alloc_at = None
+        if self.users == 0:
+            self.alloc_at = None
     def unload(self):
-        if not self.timeout_lock:
-            self.timeout_lock = True
-            self.current_timeout = self.timeout + time.perf_counter()
-            while True:
-                time.sleep(0.5)
-                if self.current_timeout < time.perf_counter():
-                    break
-                if len([x for x in self._vram_get_alloc() if x != "Maw"]) != 0:
-                    break
-            if self.users < 1:
-                self.current_timeout = None
-                self.allocation_lock = True
-                self.model.end()
-                self.model = None
-                self.allocation_lock = False
-                self._vram_unload()
-        else:
-            self.current_timeout = self.timeout + time.perf_counter()
+        try:
+            if not self.timeout_lock:
+                self.timeout_lock = True
+                self.current_timeout = self.timeout + time.perf_counter()
+                while True:
+                    time.sleep(0.5)
+                    if self.current_timeout < time.perf_counter():
+                        break
+                    if len([x for x in vram.get_allocations() if x != "Maw"]) != 0:
+                        break
+                if self.users < 1:
+                    self.current_timeout = None
+                    self.allocation_lock = True
+                    self.model.end()
+                    self.model = None
+                    self.allocation_lock = False
+                    vram.deallocate("Maw")
+            else:
+                self.current_timeout = self.timeout + time.perf_counter()
+        except Exception as e:
+            print(repr(e))
+            print(traceback.format_exc())
