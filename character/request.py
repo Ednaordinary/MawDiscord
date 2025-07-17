@@ -55,12 +55,17 @@ class SillySampler(ComboSampler):
 
         super().__init__(stack)
 
-def run_handler(idx, engine, history, view, token_count, tokenizer):
+def run_handler(idx, engine, history, view, token_count, tokenizer, char):
     if verbose: print("Running handler", idx)
     try:
-        temp = random.randint(400, 700) / 1000
-        sampler = ComboSampler(temperature=temp, min_p=0.01, top_k=40, top_p=0.95, rep_p=1.01)
-        #sampler = SillySampler(temperature=temp)
+        if char:
+            temp = random.randint(1300, 2000) / 1000
+            #sampler = ComboSampler(temperature=temp, min_p=0.0, top_k=20, top_p=0.95, rep_p=1.01)
+            sampler = SillySampler(temperature=temp, min_p=0.1, top_k=100, top_p=0.95, rep_p=1.1)
+        else:
+            temp = random.randint(500, 800) / 1000
+            #sampler = ComboSampler(temperature=temp, min_p=0.0, top_k=20, top_p=0.95, rep_p=1.01)
+            sampler = SillySampler(temperature=temp, min_p=0.0, top_k=20, top_p=0.95)
         #sampler = ExLlamaV2Sampler.Settings(temperature=temp, min_p=0.02, top_k=20, top_p=0.95, token_repetition_penalty=1.0, token_presence_penalty= 2.0)
         answer = ""
         count = 0
@@ -96,11 +101,12 @@ class Request:
         pass
 
 class RequestContext:
-    def __init__(self, message, bot_message, history, prompt):
+    def __init__(self, message, bot_message, history, prompt, char):
         self.message = message
         self.bot_message = bot_message
         self.history = history
         self.prompt = prompt
+        self.char = char
 
 class TokenCount():
     def __init__(self, req_count):
@@ -127,7 +133,7 @@ class CharacterRequest(Request):
             engine.kickstart(history) # increase first response speed (sillies)
             for i in range(resp_count):
                 if verbose: print("Starting handler:", i)
-                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view, token_count, tokenizer]))
+                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view, token_count, tokenizer, self.context.char]))
             for i in threads:
                 time.sleep(0.01) # Start in order so they also appear completed in order
                 i.start()
@@ -143,7 +149,7 @@ class CharacterRequest(Request):
         asyncio.run_coroutine_threadsafe(coro=self.context.bot_message.edit(content=content), loop=discord_loop)
 
 class ScrollRequest(Request):
-    # __init__: # context, view
+    # __init__: # context, view, idxs
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
         try:
             self.context.history.workers.append(int(self.context.bot_message.id))
@@ -155,7 +161,7 @@ class ScrollRequest(Request):
             engine.kickstart(history) # increase first response speed (sillies)
             for i in self.idxs:
                 if verbose: print("Starting handler", i)
-                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view, token_count, tokenizer]))
+                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view, token_count, tokenizer, self.context.char]))
             for i in threads:
                 time.sleep(0.01)
                 i.start()
@@ -166,5 +172,5 @@ class ScrollRequest(Request):
         except Exception as e:
             print(traceback.format_exc())
     def update_progress(self, content, discord_loop):
-        if self.view.get_idx() in list(range(len(self.view.answers))):
+        if self.view.get_idx() in self.idxs:
             asyncio.run_coroutine_threadsafe(coro=self.context.bot_message.edit(content=content), loop=discord_loop)
