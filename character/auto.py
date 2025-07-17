@@ -47,6 +47,7 @@ class SelfCriteriaRequest(Request):
                         think_switch = True
                     if think_switch:
                         for msg_id in re.findall(regex, answer):
+                            answer = ""
                             msg_id = msg_id[1:-1]
                             self.queue.put((msg_id, self.channel))
             self.queue.put((None, self.channel))
@@ -103,8 +104,9 @@ class SelfResponder(AutoResponder):
                     print(traceback.format_exc())
             else:
                 try:
-                    message = next(x for x in self.messages[channel] if x.id == int(resp[0]))
+                    for message in self.messages[resp[1]]:
+                        if message.id == int(resp[0]):
+                            yield message
+                            break
                 except:
                     print(traceback.format_exc())
-                else:
-                    yield message
