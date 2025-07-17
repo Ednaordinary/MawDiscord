@@ -14,13 +14,6 @@ https://github.com/user-attachments/assets/8869e6d1-02b9-4ce3-aa8d-c10e65f7dcb5
 https://github.com/user-attachments/assets/04419b07-d64b-40af-88ac-ab91e10b88cf
 
 
-## Want to voice chat with it? Transcribe discord calls?
-
-
-
-https://github.com/user-attachments/assets/7317a1e6-a4c1-4cc9-99bf-4b768f4bdc20
-
-
 ## Maw can even generate images for you!
 
 [Dante](https://github.com/Ednaordinary/DanteMode) must be installed alongside Maw, cloned to the same directory
@@ -34,7 +27,7 @@ https://github.com/user-attachments/assets/7317a1e6-a4c1-4cc9-99bf-4b768f4bdc20
 - Linux with cuda drivers installed
 - NVIDIA gpu with 24GB vram
 - A decent amount of storage
-- Python3.12 and the venv package
+- Python3.13 (freethreaded version highly encouraged) and uv
 
 ## Install
 
@@ -42,7 +35,7 @@ https://github.com/user-attachments/assets/7317a1e6-a4c1-4cc9-99bf-4b768f4bdc20
 git clone https://github.com/Ednaordinary/MawDiscord/
 cd MawDiscord
 pip install uv
-uv venv
+uv venv -p 3.13t
 source .venv/bin/activate
 uv pip install -r pyproject.toml
 ```
@@ -58,5 +51,5 @@ Place your bot token as `DISCORD_TOKEN` in a .env file
 
 ```sh
 source .venv/bin/activate # if you haven't already activated the environment
-python3 ./main.py
+PYTHON_GIL=0 python3 ./main.py
 ```
