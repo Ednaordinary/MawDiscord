@@ -16,6 +16,7 @@ class RequestsCounter:
         counter += 1
         with open(self.path, 'wb') as file:
             file.write((counter).to_bytes((max(counter.bit_length() + 7, 1) // 8), byteorder='big', signed=False))
+        self.block = False
     def get(self):
         try:
             with open(self.path, 'rb') as file:
