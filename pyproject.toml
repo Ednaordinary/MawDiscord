@@ -1,0 +1,15 @@
+[project]
+name = "mawdiscord"
+version = "2.0.0a"
+description = "Maw for Discord"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "exllamav2>=0.2.8",
+    "flash-attn>=2.7.4.post1",
+    "nextcord[voice]>=3.0.1",
+    "python-dotenv>=1.0.1",
+    "tokenizers>=0.21.0",
+    "torch>=2.6.0",
+    "transformers>=4.49.0",
+]
