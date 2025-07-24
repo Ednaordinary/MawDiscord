@@ -6,6 +6,8 @@
 
 https://github.com/user-attachments/assets/8869e6d1-02b9-4ce3-aa8d-c10e65f7dcb5
 
+> [!NOTE]
+> At one point, Maw could even talk back and forth with you in a voice channel! This feature proved unsustainable but I plan to implement it in a future bot. Stay tuned!
 
 ## Or.. make your own characters! Edit anything you want, and make it your own!
 
@@ -27,7 +29,8 @@ https://github.com/user-attachments/assets/04419b07-d64b-40af-88ac-ab91e10b88cf
 - Linux with cuda drivers installed
 - NVIDIA gpu with 24GB vram
 - A decent amount of storage
-- Python3.13 (freethreaded version highly encouraged) and uv
+- Python3.12+ (3.13 freethreaded version highly encouraged for the best performance. 3.12 is the earliest tested version but earlier may also work)
+- uv
 
 ## Install
 
