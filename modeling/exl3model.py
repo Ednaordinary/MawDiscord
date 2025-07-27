@@ -14,7 +14,7 @@ from exllamav3 import Model, Config, Cache, CacheLayer_quant, Tokenizer, AsyncGe
 
 libc = ctypes.CDLL("libc.so.6")
 
-resp_count = 1 # hard limit. will decrease generations even if higher in request and views. default 256
+resp_count = 256 # hard limit. will decrease generations even if higher in request and views. default 256
 
 def run_loop(self):
     try:
@@ -63,7 +63,7 @@ class Exl3Engine:
                 self.generator,
                 max_new_tokens = max_tokens,
                 token_healing=True,
-                gen_settings=sampler,
+                sampler=sampler,
                 decode_special_tokens=True,
                 input_ids = self.tokenizer.encode(prompt, add_bos = add_bos).to("cpu") if isinstance(prompt, str) else prompt.to("cpu"),
                 seed=random.randint(1, 10000000),
