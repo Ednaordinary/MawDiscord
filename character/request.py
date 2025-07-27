@@ -7,7 +7,7 @@ import time
 import sys
 import os
 
-from exllamav3 import ComboSampler
+from exllamav3 import ComboSampler, CustomSampler
 #from exllamav2.generator import ExLlamaV2Sampler
 from exllamav3.generator.sampler.custom import *
 
@@ -19,7 +19,7 @@ resp_count = 3
 #stop_token = "<｜end▁of▁sentence｜>"
 stop_token = "<|im_end|>"
 
-class SillySampler(ComboSampler):
+class SillySampler(CustomSampler):
     """
     Single class with an argument for each sampling step
     """
@@ -28,7 +28,7 @@ class SillySampler(ComboSampler):
         rep_p: float = 1.0,
         freq_p: float = 0.0,
         pres_p: float = 0.0, # be careful with this!
-        rep_sustain_range: int = 0,
+        rep_sustain_range: int = int(10e7),
         rep_decay_range: int = 0,
         temperature: float = 0.6,
         min_p: float = 0.01,
@@ -36,9 +36,12 @@ class SillySampler(ComboSampler):
         top_p: float = 0.95,
     ):
         # Steps with default parameters become no-ops
-        stack = []
+        stack = [
+            SS_RepP(rep_p, rep_sustain_range, rep_decay_range),
+            SS_PresFreqP(pres_p, freq_p, rep_sustain_range, rep_decay_range),
+        ]
 
-        if temperature == 0.0:
+        if temperature == 0.0 or top_k == 1:
             stack += [
                 SS_Argmax()
             ]
@@ -48,8 +51,6 @@ class SillySampler(ComboSampler):
                 SS_TopP(top_p),
                 SS_MinP(min_p),
                 SS_Temperature(temperature),
-                SS_RepP(rep_p, rep_sustain_range, rep_decay_range),
-                SS_PresFreqP(pres_p, freq_p, rep_sustain_range, rep_decay_range),
                 SS_Sample()
             ]
 
@@ -58,15 +59,10 @@ class SillySampler(ComboSampler):
 def run_handler(idx, engine, history, view, token_count, tokenizer, char):
     if verbose: print("Running handler", idx)
     try:
-        if char:
-            temp = random.randint(1300, 2000) / 1000
-            #sampler = ComboSampler(temperature=temp, min_p=0.0, top_k=20, top_p=0.95, rep_p=1.01)
-            sampler = SillySampler(temperature=temp, min_p=0.1, top_k=100, top_p=0.95, rep_p=1.1)
-        else:
-            temp = random.randint(500, 800) / 1000
-            #sampler = ComboSampler(temperature=temp, min_p=0.0, top_k=20, top_p=0.95, rep_p=1.01)
-            sampler = SillySampler(temperature=temp, min_p=0.0, top_k=20, top_p=0.95)
-        #sampler = ExLlamaV2Sampler.Settings(temperature=temp, min_p=0.02, top_k=20, top_p=0.95, token_repetition_penalty=1.0, token_presence_penalty= 2.0)
+        temp = random.randint(600, 2000) / 1000
+        view.set_temp(idx, temp)
+        sampler = SillySampler(temperature=temp, min_p=0.1, top_k=40, top_p=0.95, rep_p=1.05)
+        #sampler = ComboSampler(temperature=temp, min_p=0.1, top_k=40, top_p=0.95, rep_p=1.05)
         answer = ""
         count = 0
         for i in engine.generate(history, add_bos=False, stop_token=stop_token, max_tokens=1024 * 32, sampler=sampler):
