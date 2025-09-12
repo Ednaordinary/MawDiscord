@@ -43,11 +43,6 @@ source .venv/bin/activate
 uv pip install -r pyproject.toml
 ```
 
-Merge the following PRs into your environment:
-
-- https://github.com/huggingface/transformers/pull/31301/
-- https://github.com/nextcord/nextcord/pull/1160
-
 Place your bot token as `DISCORD_TOKEN` in a .env file
 
 ## Run
