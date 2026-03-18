@@ -27,12 +27,12 @@ class SillySampler(CustomSampler):
         self,
         rep_p: float = 1.0,
         freq_p: float = 0.0,
-        pres_p: float = 0.0, # be careful with this!
+        pres_p: float = 1.0, # be careful with this!
         rep_sustain_range: int = int(10e7),
         rep_decay_range: int = 0,
-        temperature: float = 0.6,
-        min_p: float = 0.01,
-        top_k: int = 40,
+        temperature: float = 1.0,
+        min_p: float = 0.0,
+        top_k: int = 20,
         top_p: float = 0.95,
     ):
         # Steps with default parameters become no-ops
@@ -61,8 +61,7 @@ def run_handler(idx, engine, history, view, token_count, tokenizer, char):
     try:
         temp = random.randint(600, 2000) / 1000
         view.set_temp(idx, temp)
-        sampler = SillySampler(temperature=temp, min_p=0.1, top_k=40, top_p=0.95, rep_p=1.05)
-        #sampler = ComboSampler(temperature=temp, min_p=0.1, top_k=40, top_p=0.95, rep_p=1.05)
+        sampler = SillySampler(temperature=temp)
         answer = ""
         count = 0
         for i in engine.generate(history, add_bos=False, stop_token=stop_token, max_tokens=1024 * 32, sampler=sampler):
