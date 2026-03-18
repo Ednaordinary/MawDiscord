@@ -23,20 +23,17 @@ class Tokenizer:
                 )
         else:
             if keep_sys:
-                if history != []:
-                    fake_history = [{"content": "\n".join([x["content"] for x in history if x["role"] == "system"]), "role": "system"}]
-                else:
-                    fake_history = []
+                sys = [{"content": "\n".join([x["content"] for x in history if x["role"] == "system"]), "role": "system"}]
                 history = [x for x in history if x["role"] != "system"]
             else:
-                fake_history = []
+                sys = []
+            fake_history = []
             last_tokenize = []
-            print(history)
             for i in history[::-1]:
-                print(i)
                 fake_history.append(i)
+                print(self.tokenizer.chat_template)
                 tokenized = self.tokenizer.apply_chat_template(
-                    conversation=fake_history[::-1], tokenize=True,
+                    conversation=sys + fake_history[::-1], tokenize=True,
                     return_tensors = "pt", add_generation_prompt=True,
                 )
                 if len(tokenized[0]) > cutoff:
