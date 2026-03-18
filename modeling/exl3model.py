@@ -57,7 +57,8 @@ class Exl3Engine:
         except:
             print(traceback.format_exc(), flush=True)
 
-    async def _run_job(self, prompt, stop_token: str, add_bos: bool, max_tokens: int, sampler, queue: Queue):
+    async def _run_job(self, prompt, stop_token: str, add_bos: bool, max_tokens: int, sampler, queue: Queue, looped=False):
+        ids = self.tokenizer.encode(prompt, add_bos = add_bos).to("cpu") if isinstance(prompt, str) else prompt.to("cpu") if isinstance(prompt, torch.Tensor) else prompt["input_ids"]
         try:
             job = AsyncJob(
                 self.generator,
@@ -65,21 +66,35 @@ class Exl3Engine:
                 token_healing=True,
                 sampler=sampler,
                 decode_special_tokens=True,
-                input_ids = self.tokenizer.encode(prompt, add_bos = add_bos).to("cpu") if isinstance(prompt, str) else prompt.to("cpu"),
+                input_ids = ids,
                 seed=random.randint(1, 10000000),
             )
-            think_switch = False
+            think_switch = looped
+            pre_think = 0
+            pre_think_text = ""
             post_think = 0
             async for result in job:
                 text = result.get("text", "")
-                if think_switch == True:
+                if think_switch:
                     post_think += len(text)
+                else:
+                    pre_think += len(text)
+                    print(pre_think)
+                    pre_think_text += text
                 if text == "</think>":
                     think_switch = True
                 if post_think >= 2000: # Force stop after 2000 sent characters
                     await job.cancel()
                     queue.put(True)
                     return
+                if not think_switch and pre_think >= 8000:
+                    await job.cancel()
+                    queue.put("</think>")
+                    new_ids = self.tokenizer.encode(pre_think_text + ". It seems I've been cut off. It's time to respond, even if I'm not quite done. I'll do my best to still get the right answer</think>", add_bos=False)
+                    new_ids = new_ids if isinstance(new_ids, torch.Tensor) else new_ids["input_ids"]
+                    print(ids.shape, new_ids.shape)
+                    new_ids = torch.cat([ids, new_ids], dim=1)
+                    return await self._run_job(new_ids, stop_token, False, max_tokens, sampler, queue, looped=True)
                 if stop_token in text:
                     await job.cancel()
                     queue.put(True)
@@ -95,13 +110,13 @@ class Exl3Engine:
         job = AsyncJob(
             self.generator,
             max_new_tokens = 100,
-            input_ids = self.tokenizer.encode(prompt, add_bos = add_bos).to("cpu") if isinstance(prompt, str) else prompt.to("cpu"),
+            input_ids = self.tokenizer.encode(prompt, add_bos = True).to("cpu") if isinstance(prompt, str) else prompt.to("cpu"),
             seed=random.randint(1, 10000000),
         )
         count = 0
         async for result in job:
             count += 1
-            if count >= 3:
+            if count >= 2:
                 await job.cancel() # a few tokens have been generated, so by this point the pages should be shared
         
     def kickstart(self, prompt):
