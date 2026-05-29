@@ -17,6 +17,8 @@ class ModelHandler:
             self.users = 1
         else:
             self.users += 1
+        while self.allocation_lock:
+            time.sleep(0.01)
         if self.model == None and self.allocation_lock == False:
             self.allocation_lock = True
             vram.allocate("Maw")
@@ -45,9 +47,10 @@ class ModelHandler:
         self.users -= 1
         if self.users < 0:
             self.users = 0
+        print("users:", self.users)
         if self.users == 0 and self.model != None and self.allocation_lock == False:
             threading.Thread(target=self.unload).start()
-    def _vram_unload(self):
-        vram.deallocate("Maw")
-    def _vram_get_alloc(self):
-        return vram.get_allocations()
+        if self.alloc_at != None and self.users == 0:
+            return time.perf_counter() - self.alloc_at
+        else:
+            return 0
