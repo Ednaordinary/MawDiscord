@@ -13,12 +13,13 @@ from ..vram import Vram
 vram = Vram()
 
 class Exl3ModelHandler(ModelHandler):
-    def __init__(self, model_id, cache_size, cache_bits, loop):
+    def __init__(self, model_id, cache_size, cache_bits, loop, draft=None):
         super().__init__()
         self.model_id = model_id
         self.cache_size = cache_size
         self.cache_bits = cache_bits
         self.loop = loop
+        self.draft = draft
         self.load_progress = Queue()
     def load_callback(self, current, total):
         if total != 0:
@@ -31,7 +32,6 @@ class Exl3ModelHandler(ModelHandler):
             print(repr(e))
             print(traceback.format_exc())
         self.load_progress.put(True)
-        print()
     def load(self):
         threading.Thread(target=self._load).start()
         while True:
@@ -52,8 +52,8 @@ class Exl3ModelHandler(ModelHandler):
             print(traceback.format_exc())
 
 class Exl3ModelHandlerLazy(Exl3ModelHandler):
-    def __init__(self, model_id, cache_size, cache_bits, loop, timeout=10 * 60):
-        super().__init__(model_id, cache_size, cache_bits, loop)
+    def __init__(self, model_id, cache_size, cache_bits, loop, timeout=10 * 60, draft=None):
+        super().__init__(model_id, cache_size, cache_bits, loop, draft=draft)
         self.timeout = timeout
         self.timeout_lock = False
         self.current_timeout = None

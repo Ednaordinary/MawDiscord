@@ -24,7 +24,7 @@ from character.defaults import MawPrompts
 from character.auto import SelfResponder
 from character.config import Config
 
-from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, async_get_hook, get_history, relative_time, make_status, try_get_history, FakeHistObj
+from util import init, get_path, get_all_chars, is_referring, dev_check, perm_check, get_hook, async_get_hook, get_history, relative_time, make_status, try_get_history, FakeHistObj, handle_images
 
 client, token, dev_mode, dante_id = init()
 owner = None
@@ -34,20 +34,20 @@ histories = {}
 hooks = {}
 requests_counter = RequestsCounter("data/req.bin")
 
-cutoff = 1024 * 32
+cutoff = 1024 * 12
 model_loop = Exl3Loop()
 quant = (4, 3)
-#model_handler = Exl3ModelHandler("dr1-2-q3-8b-4bpw", 1024 * 256, quant, model_loop)
-#tokenizer = Tokenizer("deepseek-ai/DeepSeek-R1-0528-Qwen3-8B")
-model_handler = Exl3ModelHandler("Qwen3-30B-A3B-exl3-3.5b", 1024 * 40, quant, model_loop)
-tokenizer = Tokenizer("Qwen/Qwen3-30B-A3B")
-#model_handler = Exl2ModelHandlerLazy("q3-30b-a3b-exl2", 1024 * 72, ExLlamaV2Cache_Q4, model_loop)
-#tokenizer = Tokenizer("Qwen/Qwen3-30B-A3B")
+model_handler = Exl3ModelHandler("./qwen3.5-35b-a3b-heretic", 1024 * 256, quant, model_loop, draft="./qwen3.5-a3b-dflash-4bpw")
+tokenizer = Tokenizer("Qwen/Qwen3.5-35B-A3B", "./qwen3.5-35b-a3b-heretic")
 
 character_queue = Queue()
 handlers = 0
 
 auto_responder = SelfResponder(character_queue, client, cutoff, tokenizer)
+
+def load_bar(progress):
+    filled = int(10*progress)
+    return "▰"*filled + "▱"*(10-filled)
 
 def handler(to_handle):
     try:
@@ -62,7 +62,7 @@ def handler(to_handle):
                     to_handle.update_progress("Waiting on " + i[1].strip(), client.loop)
                 else:
                     if limiter + 1.5 < time.perf_counter():
-                        to_handle.update_progress(str(int(100*(i[1][0] / i[1][1]))) + "%", client.loop)
+                        to_handle.update_progress(load_bar((i[1][0] / i[1][1])), client.loop)
                         limiter = time.perf_counter()
             else:
                 model = i
@@ -73,10 +73,9 @@ def handler(to_handle):
         if new_tokens != None:
             tokens += new_tokens 
         current_run_time = model_handler.deallocate()
+        print("cur runtime:", current_run_time, "tokens:", tokens)
         if current_run_time is not None:
             run_time += current_run_time 
-        print(tokens)
-        print(run_time)
         handlers -= 1
         if handlers == 0:
             activity = make_status(tokens, run_time, requests_counter.get())
@@ -110,7 +109,8 @@ async def maw_send(message, auto=False):
             msg_id = 9999999999999999999999999 # not preferable but does get a message to the bottom
             auto_prompt = MawPrompts.reply_focus + prompt
             history.add_message(Message(msg_id, auto_prompt, "user"))
-        context = RequestContext(message, bot_message, history, prompt, False)
+        images = handle_images(message)
+        context = RequestContext(message, bot_message, history, prompt, False, images)
         tool = Tool()
         dante_tool = DanteTool(async_get_hook, dante_id, perm_check, message.channel, hooks, client.loop, client.user.id)
         tools = [tool, dante_tool] if not isinstance(message.channel, discord.DMChannel) else []
@@ -118,9 +118,9 @@ async def maw_send(message, auto=False):
         req_kwargs = {"context": context, "cutoff": cutoff, "tools": tools, "edit": False, "req_count": requests_counter, "queue": character_queue}
         character_queue.put(CharacterRequest(**req_kwargs))
 
-def read():
+def read(current):
     try:
-        for i in auto_responder.should_respond():
+        for i in auto_responder.should_respond(current):
             asyncio.run_coroutine_threadsafe(coro=maw_send(i, auto=True), loop=client.loop)
     except:
         print(traceback.format_exc())
@@ -150,19 +150,20 @@ async def on_message(message):
         history_path = get_path("char", "history", message)
         history = get_history(history_path, histories, None, char=True)
         prompt = message.clean_content
-        context = RequestContext(message, bot_message, history, prompt, True)
+        images = handle_images(message)
+        context = RequestContext(message, bot_message, history, prompt, True, images)
         req_kwargs = {"context": context, "cutoff": cutoff, "tools": [], "edit": True, "req_count": requests_counter, "queue": character_queue}
         character_queue.put(CharacterRequest(**req_kwargs))
     elif char_message:
         if perm_check(message.channel, message.guild, "send"):
             await message.channel.send("### >>> Maw is in dev mode. Please come back later.")
-    if not char_message:
+    if not char_message and isinstance(message.channel, discord.TextChannel):
         auto_responder.log_message(message)
-        rand_value = random.randint(1, 100)
+        rand_value = random.randint(1, 10)
         print(rand_value)
         if rand_value == 1:
             print("Reading chat log")
-            threading.Thread(target=read).start()
+            threading.Thread(target=read, args=[message]).start()
 
 @client.event
 async def on_raw_message_edit(payload):
@@ -186,7 +187,9 @@ async def on_raw_message_edit(payload):
                         prompt = message.clean_content
                     else:
                         prompt = str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: " + message.clean_content
-                history.edit_message(Message(payload.message_id, prompt, "user"))
+                images = handle_images(message)
+                history.edit_message(Message(payload.message_id, prompt, "user", images))
+                    
 
 @client.event
 async def on_raw_message_delete(payload):
@@ -232,13 +235,13 @@ async def reset(
     else:
         await interaction.response.send_message("No context found to clear.")
 
-@client.slash_command(name="read", description="Forces an auto read (this is a debug action)")
-async def read_cmd(
-        interaction: discord.Interaction,
-):
-    await interaction.response.send_message("Reading...")
-    print("Reading chat log")
-    threading.Thread(target=read).start()
+# @client.slash_command(name="read", description="Forces an auto read (this is a debug action)")
+# async def read_cmd(
+#         interaction: discord.Interaction,
+# ):
+#     await interaction.response.send_message("Reading...")
+#     print("Reading chat log")
+#     threading.Thread(target=read).start()
 
 @client.slash_command(name="token")
 async def token_root(

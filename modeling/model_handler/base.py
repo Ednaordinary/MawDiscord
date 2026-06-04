@@ -17,6 +17,7 @@ class ModelHandler:
             self.users = 1
         else:
             self.users += 1
+        print("users:", self.users)
         while self.allocation_lock:
             time.sleep(0.01)
         if self.model == None and self.allocation_lock == False:
@@ -51,6 +52,8 @@ class ModelHandler:
         if self.users == 0 and self.model != None and self.allocation_lock == False:
             threading.Thread(target=self.unload).start()
         if self.alloc_at != None and self.users == 0:
-            return time.perf_counter() - self.alloc_at
+            diff = time.perf_counter() - self.alloc_at
+            self.alloc_at = None
+            return diff
         else:
             return 0

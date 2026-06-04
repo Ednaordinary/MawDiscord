@@ -49,7 +49,7 @@ class DanteTool(Tool):
                 if image.strip() != "":
                     try:
                         print("writing to queue")
-                        with open("../DanteMode/queue.txt", "a") as image_queue:
+                        with open("../DanteOld/queue.txt", "a") as image_queue:
                             if hook:
                                 image_queue.write("\n" + str(self.channel.id) + "|" + hook.url + "|" + str(image).replace("\n", "\\n"))
                             else:

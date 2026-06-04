@@ -1,8 +1,12 @@
 import traceback
 import logging
-import json
+import base64
+import ujson as json
 import time
 import os
+import io
+
+from PIL import Image
 
 from json.decoder import JSONDecodeError
 
@@ -11,20 +15,39 @@ logger = logging.getLogger(__name__)
 role_trans = {"user": "u", "system": "s", "assistant": "c"}
 role_trans_rev = {"u": "user", "s": "system", "c": "assistant"}
 
+def image_to_bytes(image: Image.Image):
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+def bytes_to_image(image: str):
+    data = base64.b64decode(image)
+    try:
+        return Image.open(io.BytesIO(data))
+    except Exception as e:
+        print(traceback.format_exc())
+        return None
+
 class MessageJson(dict):
     def __init__(self, **kwargs):
         dict.__init__(self, **kwargs)
 
 class Message:
-    def __init__(self, message_id, content, role):
+    def __init__(self, message_id, content, role, images=None):
         self.message_id = int(message_id)
         self.content = str(content)
         self.role = role
+        if images:
+            self.images = images
+            # Images can be instantiated from both current memory and saved history.
+            self.images = [x for x in map(lambda x: bytes_to_image(x) if isinstance(x, str) else x, self.images) if x is not None]
     def __str__(self):
-        return "Message: (" + str(self.message_id) + " " + str(self.role) + ")"
+        return "Message: (" + str(self.message_id) + " " + str(self.role) + " " + (str(self.images) if "images" in self.__dict__ else "") + ")"
     def __repr__(self):
         return self.__str__()
     def to_json(self):
+        if "images" in self.__dict__:
+            return MessageJson(message_id=self.message_id, content=self.content, role=self.role, images=[image_to_bytes(x) for x in self.images])
         return MessageJson(message_id=self.message_id, content=self.content, role=self.role)
 
 class History:
@@ -138,28 +161,52 @@ class History:
                     break
             self.write_history()
         self.usable = True
-    def to_tokenizer(self, group=True, grouper="\n", limit=None, includes=None):
+    def to_tokenizer(self, group=True, grouper="\n", limit=None, includes=None, vision=None, exl_tokenizer=None):
         logger.debug("to_tokenizer called")
+        image_embeds = []
         if group:
             history = []
             group = ""
+            group_images = []
             last_role = None
             for i in self.read_history(limit=limit, usable=True, includes=includes):
+                print(i.__dict__)
                 if i.role == last_role:
                     group = group + grouper + i.content
+                    if "images" in i.__dict__:
+                        print("adding image")
+                        group_images.extend(i.images)
                 else:
                     if group != "":
-                        history.append({"role": last_role, "content": group})
+                        if len(group_images) != 0 and vision != None:
+                            embeds = [vision.get_image_embeddings(tokenizer = exl_tokenizer, image=x) for x in group_images]
+                            image_embeds.extend(embeds)
+                            history.append({"role": last_role, "content": "\n".join([ie.text_alias for ie in embeds]) + "\n" + group})
+                        else:
+                            history.append({"role": last_role, "content": group})
+                    group_images = []
                     group = i.content
                     last_role = i.role
+                    if "images" in i.__dict__:
+                        group_images.extend(i.images)
             if group != "":
-                history.append({"role": last_role, "content": group})
-            return history
+                if len(group_images) != 0 and vision != None:
+                    embeds = [vision.get_image_embeddings(tokenizer = exl_tokenizer, image=x) for x in group_images]
+                    image_embeds.extend(embeds)
+                    history.append({"role": last_role, "content": "\n".join([ie.text_alias for ie in embeds]) + "\n" + group})
+                else:
+                    history.append({"role": last_role, "content": group})
+            return history, image_embeds if image_embeds != None else history
         else:
             history = []
             for i in self.read_history(limit=limit, usable=True):
-                history.append({"role": i.role, "content": i.content})
-            return history
+                if "images" in i.__dict__ and vision != None:
+                    embeds = [vision.get_image_embeddings(tokenizer = exl_tokenizer, image=x) for x in i.images]
+                    image_embeds.extend(embeds)
+                    history.append({"role": i.role, "content": "\n".join([ie.text_alias for ie in embeds]) + "\n" + i.content})
+                else:
+                    history.append({"role": i.role, "content": i.content})
+            return history, image_embeds if image_embeds != None else history
     def to_unwatched(self):
         unwatched = UnwatchedHistory(self.path, self.sys)
         unwatched.copy_history(self.history)
@@ -220,11 +267,15 @@ class JsonHistory(History):
         self.wait = True
         with open(self.path, "r") as file:
             try:
-                self.history = json.load(file)
-                self.history = [(Message(**i) if not isinstance(i, Message) else Message) for i in self.history]
+                history = json.load(file)
+                self.history = [(Message(**i) if not isinstance(i, Message) else Message) for i in history]
             except Exception as e:
-                print("file:", file.read())
-                print(traceback.format_exc())
+                file_read = file.read()
+                if file_read.strip() == "":
+                    self.history = []
+                else:
+                    print("file:", file_read)
+                    print(traceback.format_exc())
         self.wait = False
         logger.debug("(read): " + str(self.history))
         if limit != None:

@@ -15,7 +15,7 @@ from .views import ScrollRedoView
 from .history import Message
 
 verbose = True
-resp_count = 3
+resp_count = 5
 #stop_token = "<｜end▁of▁sentence｜>"
 stop_token = "<|im_end|>"
 
@@ -56,7 +56,7 @@ class SillySampler(CustomSampler):
 
         super().__init__(stack)
 
-def run_handler(idx, engine, history, view, token_count, tokenizer, char):
+def run_handler(idx, engine, history, view, token_count, tokenizer, char, image_embeds=None):
     if verbose: print("Running handler", idx)
     try:
         temp = random.randint(600, 2000) / 1000
@@ -64,13 +64,13 @@ def run_handler(idx, engine, history, view, token_count, tokenizer, char):
         sampler = SillySampler(temperature=temp)
         answer = ""
         count = 0
-        for i in engine.generate(history, add_bos=False, stop_token=stop_token, max_tokens=1024 * 32, sampler=sampler):
+        for i in engine.generate(history, add_bos=False, stop_token=stop_token, max_tokens=1024 * 32, sampler=sampler, image_embeds=image_embeds):
             if isinstance(i, bool):
                 pass
             else:
                 count += 1
-                token_count.inc()
                 answer += i
+                token_count.inc()
                 view.update_answer(idx, answer, count)
         view.update_answer(idx, answer, count, limit=False)
     except Exception as e:
@@ -96,12 +96,13 @@ class Request:
         pass
 
 class RequestContext:
-    def __init__(self, message, bot_message, history, prompt, char):
+    def __init__(self, message, bot_message, history, prompt, char, images=None):
         self.message = message
         self.bot_message = bot_message
         self.history = history
         self.prompt = prompt
         self.char = char
+        self.images = images
 
 class TokenCount():
     def __init__(self, req_count):
@@ -117,18 +118,23 @@ class CharacterRequest(Request):
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
         try:
             self.context.history.workers.append(int(self.context.bot_message.id))
-            self.context.history.add_message(Message(self.context.message.id, self.context.prompt, "user"))
+            self.context.history.add_message(Message(self.context.message.id, self.context.prompt, "user", images=self.context.images))
             tool_prompt = self.context.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
             self.context.history.edit_message(Message(0, tool_prompt, "system"))
             view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.context, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest, self.req_count), loop=discord_loop).result()
-            history = self.context.history.to_tokenizer(limit=self.context.message.id)
-            history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
+            vision = hasattr(engine, "vision")
+            history = self.context.history.to_tokenizer(limit=self.context.message.id, vision=engine.vision, exl_tokenizer=engine.tokenizer) if vision else self.context.history.to_tokenizer(limit=self.context.message.id)
+            if isinstance(history, tuple):
+                history, image_embeds = history
+                history = tokenizer.history_to_tokens(history, cutoff=self.cutoff, embeds=image_embeds)
+            else:                
+                history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
             threads = []
             token_count = TokenCount(self.req_count)
-            engine.kickstart(history) # increase first response speed (sillies)
+            #engine.kickstart(history) # increase first response speed (sillies)
             for i in range(resp_count):
-                if verbose: print("Starting handler:", i)
-                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view, token_count, tokenizer, self.context.char]))
+                if verbose: print("Starting handler:", i, image_embeds)
+                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view, token_count, tokenizer, self.context.char], kwargs={"image_embeds": image_embeds}))
             for i in threads:
                 time.sleep(0.01) # Start in order so they also appear completed in order
                 i.start()
@@ -149,11 +155,17 @@ class ScrollRequest(Request):
         try:
             self.context.history.workers.append(int(self.context.bot_message.id))
             self.context.history.add_message(Message(self.context.message.id, self.context.prompt, "user"))
-            history = self.context.history.to_tokenizer(limit=self.context.message.id)
-            history = tokenizer.history_to_tokens(history, cutoff=self.view.cutoff)
+            vision = hasattr(engine, "vision")
+            history = self.context.history.to_tokenizer(limit=self.context.message.id, vision=engine.vision, exl_tokenizer=engine.tokenizer) if vision else self.context.history.to_tokenizer(limit=self.context.message.id)
+            if isinstance(history, tuple):
+                history, image_embeds = history
+                history = tokenizer.history_to_tokens(history, cutoff=self.view.cutoff, embeds=image_embeds)
+            else:                
+                history = tokenizer.history_to_tokens(history, cutoff=self.view.cutoff)
+
             threads = []
             token_count = TokenCount(self.view.req_count)
-            engine.kickstart(history) # increase first response speed (sillies)
+            #engine.kickstart(history) # increase first response speed (sillies)
             for i in self.idxs:
                 if verbose: print("Starting handler", i)
                 threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view, token_count, tokenizer, self.context.char]))

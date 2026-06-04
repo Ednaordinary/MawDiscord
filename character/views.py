@@ -13,18 +13,113 @@ import re
 import math
 
 verbose = False
-resp_count = 3
+resp_count = 5
 char_lim = 1999
 
 think_regex = re.compile(r'[\s\S]*?<\/think>')
 ans_regex = re.compile(r'<\/think>[\s\S]*', flags=re.M)
 
+
 def think_bar():
     # spinner!
-    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    idx = int(time.perf_counter() / 1) 
+    #frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    frames = [
+        "█▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "██▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "███▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "████▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "██████▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "██████▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "███████▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "████████▁▁▁▁▁▁▁▁▁▁▁▁",
+        "█████████▁▁▁▁▁▁▁▁▁▁▁",
+        "█████████▁▁▁▁▁▁▁▁▁▁▁",
+        "██████████▁▁▁▁▁▁▁▁▁▁",
+        "███████████▁▁▁▁▁▁▁▁▁",
+        "█████████████▁▁▁▁▁▁▁",
+        "██████████████▁▁▁▁▁▁",
+        "██████████████▁▁▁▁▁▁",
+        "▁██████████████▁▁▁▁▁",
+        "▁██████████████▁▁▁▁▁",
+        "▁██████████████▁▁▁▁▁",
+        "▁▁██████████████▁▁▁▁",
+        "▁▁▁██████████████▁▁▁",
+        "▁▁▁▁█████████████▁▁▁",
+        "▁▁▁▁██████████████▁▁",
+        "▁▁▁▁██████████████▁▁",
+        "▁▁▁▁▁██████████████▁",
+        "▁▁▁▁▁██████████████▁",
+        "▁▁▁▁▁██████████████▁",
+        "▁▁▁▁▁▁██████████████",
+        "▁▁▁▁▁▁██████████████",
+        "▁▁▁▁▁▁▁█████████████",
+        "▁▁▁▁▁▁▁█████████████",
+        "▁▁▁▁▁▁▁▁████████████",
+        "▁▁▁▁▁▁▁▁████████████",
+        "▁▁▁▁▁▁▁▁▁███████████",
+        "▁▁▁▁▁▁▁▁▁███████████",
+        "▁▁▁▁▁▁▁▁▁▁██████████",
+        "▁▁▁▁▁▁▁▁▁▁██████████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁████████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁███████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁██████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁█████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁█████",
+        "█▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁████",
+        "██▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁███",
+        "██▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁███",
+        "███▁▁▁▁▁▁▁▁▁▁▁▁▁▁███",
+        "████▁▁▁▁▁▁▁▁▁▁▁▁▁▁██",
+        "█████▁▁▁▁▁▁▁▁▁▁▁▁▁▁█",
+        "█████▁▁▁▁▁▁▁▁▁▁▁▁▁▁█",
+        "██████▁▁▁▁▁▁▁▁▁▁▁▁▁█",
+        "████████▁▁▁▁▁▁▁▁▁▁▁▁",
+        "█████████▁▁▁▁▁▁▁▁▁▁▁",
+        "█████████▁▁▁▁▁▁▁▁▁▁▁",
+        "█████████▁▁▁▁▁▁▁▁▁▁▁",
+        "█████████▁▁▁▁▁▁▁▁▁▁▁",
+        "███████████▁▁▁▁▁▁▁▁▁",
+        "████████████▁▁▁▁▁▁▁▁",
+        "████████████▁▁▁▁▁▁▁▁",
+        "██████████████▁▁▁▁▁▁",
+        "██████████████▁▁▁▁▁▁",
+        "▁██████████████▁▁▁▁▁",
+        "▁██████████████▁▁▁▁▁",
+        "▁▁▁█████████████▁▁▁▁",
+        "▁▁▁▁▁████████████▁▁▁",
+        "▁▁▁▁▁████████████▁▁▁",
+        "▁▁▁▁▁▁███████████▁▁▁",
+        "▁▁▁▁▁▁▁▁█████████▁▁▁",
+        "▁▁▁▁▁▁▁▁█████████▁▁▁",
+        "▁▁▁▁▁▁▁▁▁█████████▁▁",
+        "▁▁▁▁▁▁▁▁▁█████████▁▁",
+        "▁▁▁▁▁▁▁▁▁▁█████████▁",
+        "▁▁▁▁▁▁▁▁▁▁▁████████▁",
+        "▁▁▁▁▁▁▁▁▁▁▁████████▁",
+        "▁▁▁▁▁▁▁▁▁▁▁▁███████▁",
+        "▁▁▁▁▁▁▁▁▁▁▁▁███████▁",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁███████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁███████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁█████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁████",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁███",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁███",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁██",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁██",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁██",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁█",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁█",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁█",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"
+    ]
+    idx = int(time.perf_counter() / 0.1) 
     frame = frames[(idx % len(frames))]
-    return frame
+    return "`" + frame + "`"
 
 async def edit(message, content, view):
     try:
@@ -40,6 +135,8 @@ class ScrollRedoView(discord.ui.View):
         self.idx = 0
         self.tok_count = [0]*len(self.answers)
         self.completed = [False]*len(self.answers)
+        self.temps = [0.0]*len(self.answers)
+        self.options = [discord.SelectOption(label=think_bar(), value=str(idx), default=(idx==self.idx)) for idx in range(len(self.answers))]
         self.limiter = time.perf_counter()
         self.runtools = self.get_runtools()
         self.menu = self.get_menu()
@@ -52,6 +149,8 @@ class ScrollRedoView(discord.ui.View):
         return self.idx
     def set_idx(self):
         self.idx = idx
+    def set_temp(self, idx, temp):
+        self.temps[idx] = temp
     def update_answer(self, idx, updated, tok_count, limit=True):
         self.answers[idx] = updated
         self.tok_count[idx] = tok_count
@@ -59,13 +158,13 @@ class ScrollRedoView(discord.ui.View):
             return
         self.running_update = True
         #if idx == self.idx:
-        limiter = math.log(len(set(self.context.history.workers))**1.2) + 1.2
-        #limiter = 1.2
-        if self.limiter + limiter < time.perf_counter() or limit == False:
+        #limiter = math.log(len(set(self.context.history.workers))**1.2) + 1.2
+        limiter = 1.2
+        if (self.limiter + limiter < time.perf_counter()) or limit == False:
             self.limiter = time.perf_counter()
             #if idx == self.idx:
-            self.context.history.edit_message(Message(self.context.bot_message.id, updated, "assistant"))
             answer = self.get_answer()
+            self.context.history.edit_message(Message(self.context.bot_message.id, answer, "assistant"))
             if verbose: print("Updating for", idx, "|", answer[:10])
             self.handle_disabled()
             #asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(content=answer[:char_lim], view=self), self.loop)
@@ -109,6 +208,8 @@ class ScrollRedoView(discord.ui.View):
                 self.answers.extend([""]*resp_count)
                 self.completed.extend([False]*resp_count)
                 self.tok_count.extend([0]*resp_count)
+                self.temps.extend([0.0]*resp_count)
+                self.options.extend([discord.SelectOption(label=think_bar(), value=str(idx), default=(idx==self.idx)) for idx in idxs])
                 req_kwargs = {"context": self.context, "view": self, "idxs": idxs}
                 scroll_request = self.continue_request(**req_kwargs)
                 self.queue.put(scroll_request)
@@ -125,7 +226,13 @@ class ScrollRedoView(discord.ui.View):
         for child in children: 
             if isinstance(child, discord.ui.StringSelect):
                 if self.show_menu == True:
-                    child.options = [discord.SelectOption(label=(self.get_answer(idx)[:99] if self.get_answer(idx).strip() != "" else "..."), value=str(idx), default=(idx==self.idx)) for idx in range(len(self.answers))][:25]
+                    pass
+                    #child.options = [discord.SelectOption(label=(("(" + str(round(self.temps[idx], 2)) + ") " + self.get_answer(idx))[:99]), value=str(idx), default=(idx==self.idx)) for idx in range(len(self.answers))][:25]
+                    for idx, option in enumerate(self.options):
+                        option.label = (("(" + str(round(self.temps[idx], 2)) + ") " + self.get_answer(idx))[:99])
+                        option.value = str(idx)
+                        option.default = (idx==self.idx)
+                    child.options = self.options[:25]
                 else:
                     if self.menu in children:
                         children = [x for x in children if x != self.menu]
@@ -146,10 +253,11 @@ class ScrollRedoView(discord.ui.View):
                 if self.get_thoughts() == "" or self.show_menu == False:
                     children = [x for x in children if x != self.thought_button]
             elif child.label == "▶️":
-                answer = self.get_answer(do_filter=False)
-                runnabletools = [i for i in self.tools if i.will_run(answer)]
-                if runnabletools == []:
-                    children = [x for x in children if x != self.runtools]
+                answer, think = self.get_answer(do_filter=False, return_think=True)
+                if think:
+                    runnabletools = [i for i in self.tools if i.will_run(answer)]
+                    if runnabletools == []:
+                        children = [x for x in children if x != self.runtools]
             else:
                 try:
                     int(child.label)
@@ -158,25 +266,32 @@ class ScrollRedoView(discord.ui.View):
                 else:
                     child.label = str(self.idx + 1)
         self.children = children
-    def get_answer(self, idx=None, do_filter=True):
+    def get_answer(self, idx=None, do_filter=True, return_think=False):
         if idx == None:
             idx = self.idx
         answer = self.answers[idx]
-        search = re.search(ans_regex, answer)
         ignore_strings = ["</think>", "<think>", "<tool_call>", "</tool_call>"]
-        if search != None:
+        think = False
+        if "</think>" in answer:
+            think = True
+            search = re.search(ans_regex, answer)
             answer = search.group(0)
             for i in ignore_strings:
                 answer = answer.replace(i, "\n")
             answer = answer.strip()
+            if idx == self.idx and do_filter:
+                for tool in self.tools:
+                    answer = tool.filter(answer)
         else:
-            answer = think_bar() + " (" + str(self.tok_count[idx]) + " tok)"
-        if idx == self.idx and do_filter:
-            for tool in self.tools:
-                answer = tool.filter(answer)
-        return answer
+            tok_count = self.tok_count[idx]
+            answer = think_bar() + " (" + (str(tok_count) if tok_count < 1000 else (str(int(tok_count/1000)) + "k")) + " tok)"
+        if answer == "":
+            answer = "..."
+        return (answer, think) if return_think else answer
     def get_thoughts(self):
         answer = self.answers[self.idx]
+        if "</think>" not in answer:
+            return answer
         thoughts = []
         for match in re.findall(think_regex, answer):
             thoughts.append(match.replace("</think>", ""))

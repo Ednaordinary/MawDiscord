@@ -1,15 +1,22 @@
+import json
 import os
 
 class Config:
     def __init__(self, path):
         self.path = path
-    def write(self, name):
+    def touch(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "w") as f:
-            f.write(name.replace("\n", ""))
+            f.write("")
+    def write(self, config):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, "w") as f:
+            json.dump(config, f, indent=4)
     def get(self):
-        config = {}
-        with open(self.path, "r") as f:
-            lines = [(x[:-1] if x[-1] == "\n" else x) for x in f.readlines()]
-            config["name"] = lines[0]
+        try:
+            with open(self.path, "r") as f:
+                config = json.load(f)
+        except:
+            self.touch()
+            config = {}
         return config

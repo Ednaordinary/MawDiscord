@@ -1,11 +1,21 @@
+from typing import List
 from dotenv import load_dotenv
 import nextcord as discord
 import asyncio
+import traceback
+import requests
 import torch
 import os
+import io
+
+from concurrent.futures import ThreadPoolExecutor
+
+from PIL import Image
 
 from character.history import JsonHistory
 from character.defaults import MawPrompts
+
+image_types = ["image/jpeg", "image/png", "image/webp", "image/avif"]
 
 def init():
     load_dotenv()
@@ -171,3 +181,23 @@ def try_get_history(char_id, server_id, histories):
     if history_path != None:
         return get_history(history_path, histories, None)
     else: return None
+
+def get_image(url: str) -> Image.Image | None:
+    data = requests.get(url)
+    if data.status_code == 200:
+        try:
+            image = Image.open(io.BytesIO(data.content))
+            image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            return image
+        except Exception as e:
+            print(traceback.format_exc())
+            return None
+    return None
+        
+
+def handle_images(message: discord.Message) -> List[Image.Image]:
+    urls = [x.url for x in message.attachments if x.content_type in image_types]
+    if urls != []:
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            return [x for x in executor.map(get_image, urls) if x is not None]
+    return list()

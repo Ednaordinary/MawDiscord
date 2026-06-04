@@ -9,6 +9,7 @@ from exllamav3 import ComboSampler
 from .request import Request, stop_token
 from .defaults import MawPrompts
 from .history import UnwatchedHistory, Message
+from .config import Config
 
 class AutoResponder:
     """
@@ -21,7 +22,7 @@ class AutoResponder:
             self.messages[message.channel.id].append(message)
         else:
             self.messages[message.channel.id] = [message]
-    def should_respond(self):
+    def should_respond(self, current):
         # Using previous messages, decide what to respond to based on criteria
         return [] # Messages to respond to
 
@@ -60,6 +61,36 @@ class SelfCriteriaRequest(Request):
     def update_progress(self, content, discord_loop):
         pass
 
+# copied from ..util
+def get_path(path_type="maw", data_type = "history", obj=None):
+    char_id = obj.channel.id
+    try:
+        server_id = obj.guild.id
+    except:
+        server_id = None
+    if path_type == "maw":
+        if char_id != None:
+            if data_type == "history":
+                # Here, char_id is a channel
+                if server_id == None:
+                    return "data/dms/" + str(char_id) + "/history.json"
+                else:
+                    return "data/servers/" + str(server_id) + "/" + str(char_id) + "/history.json"
+            if data_type == "config":
+                if server_id == None:
+                    return "data/dms/" + str(char_id) + "/config.json"
+                else:return "data/servers/" + str(server_id) + "/" + str(char_id) + "/config.json"
+                    
+            else: return None
+        else: return None
+    elif path_type == "char":
+        if char_id != None and server_id != None:
+            if data_type == "history":
+                return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/history.json"
+            if data_type == "config":
+                return "data/servers/" + str(server_id) + "/char/" + str(char_id) + "/config.json"
+    else: return None
+
 class SelfResponder(AutoResponder):
     """
     Choose whether to respond based on what maw itself thinks (sillies)
@@ -70,27 +101,31 @@ class SelfResponder(AutoResponder):
         self.client = client
         self.cutoff = cutoff
         self.tokenizer = tokenizer
-    def should_respond(self):
+    def should_respond(self, current):
         responsives = []
         response_queue = Queue()
         for channel, messages in [(a, b) for a, b in self.messages.items()]:
-            sys = MawPrompts.default + "\n\n" + MawPrompts.default_personality + "\n\n" + MawPrompts.auto_response_criteria_sys
-            history = UnwatchedHistory("", sys)
-            history.renew_sys()
-            for message in messages:
-                prefix = str(message.id) + " " + str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: "
-                role = "assistant" if message.author.id == self.client.user.id else "user"
-                history.append_message(Message(message.id, prefix + message.clean_content, role))
-            msg_id = 9999999999999999999999999 # not preferable but does get a message to the bottom
-            auto_prompt = MawPrompts.auto_response_criteria
-            history.add_message(Message(msg_id, auto_prompt, "user"))
-            history.sort_messages()
-            history = history.to_tokenizer(includes="</think>")
-            print(history)
-            history = self.tokenizer.history_to_tokens(history, cutoff=self.cutoff)
-            request = SelfCriteriaRequest(prompt=history, queue=response_queue, channel=channel)
-            responsives.append(channel)
-            self.queue.put(request)
+            if 1 == random.randint(1, 2) and (current.id - messages[-1].id) < 300000000000:
+                config_path = get_path("maw", "config", messages[-1])
+                config_file = Config(config_path)
+                config = config_file.get()
+                sys = MawPrompts.default + "\n\n" + config["personality"] + "\n\n" + MawPrompts.auto_response_criteria_sys
+                history = UnwatchedHistory("", sys)
+                history.renew_sys()
+                for message in messages:
+                    prefix = str(message.id) + " " + str(message.author.nick or message.author.global_name or message.author.name or "User").strip() + " said: "
+                    role = "assistant" if message.author.id == self.client.user.id else "user"
+                    history.append_message(Message(message.id, prefix + message.clean_content, role))
+                msg_id = 9999999999999999999999999 # not preferable but does get a message to the bottom
+                auto_prompt = MawPrompts.auto_response_criteria
+                history.add_message(Message(msg_id, auto_prompt, "user"))
+                history.sort_messages()
+                history = history.to_tokenizer(includes="</think>")
+                print(history)
+                history = self.tokenizer.history_to_tokens(history, cutoff=self.cutoff)
+                request = SelfCriteriaRequest(prompt=history, queue=response_queue, channel=channel)
+                responsives.append(channel)
+                self.queue.put(request)
         print("waiting for response")
         while responsives != []:
             print("waiting..")
