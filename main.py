@@ -37,8 +37,8 @@ requests_counter = RequestsCounter("data/req.bin")
 cutoff = 1024 * 12
 model_loop = Exl3Loop()
 quant = (4, 3)
-model_handler = Exl3ModelHandler("./qwen3.5-35b-a3b-heretic", 1024 * 256, quant, model_loop, draft="./qwen3.5-a3b-dflash-4bpw")
-tokenizer = Tokenizer("Qwen/Qwen3.5-35B-A3B", "./qwen3.5-35b-a3b-heretic")
+model_handler = Exl3ModelHandler("./models/qwen3.5-35b-a3b-heretic", 1024 * 256, quant, model_loop, draft="./models/qwen3.5-a3b-dflash-4bpw")
+tokenizer = Tokenizer("Qwen/Qwen3.5-35B-A3B", "./models/qwen3.5-35b-a3b-heretic")
 
 character_queue = Queue()
 handlers = 0
