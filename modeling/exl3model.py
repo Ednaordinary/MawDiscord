@@ -60,7 +60,7 @@ class Exl3Engine:
             )
             self.draft.load(progressbar=False)
         self.model = Model.from_config(self.config)
-        # self.vision = Model.from_config(self.config, component="vision")
+        self.vision = Model.from_config(self.config, component="vision")
         if quant:
             self.cache = Cache(
                 self.model,
@@ -71,7 +71,7 @@ class Exl3Engine:
             )
         else:
             self.cache = Cache(self.model, max_num_tokens=cache_size)
-        # self.vision.load(progressbar=False)
+        self.vision.load(progressbar=False)
         self.model.load(progressbar=False, callback=callback)
         self.tokenizer = Tokenizer.from_config(self.config)
         self.engineloop = loop
