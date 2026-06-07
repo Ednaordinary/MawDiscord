@@ -380,6 +380,7 @@ token_root = discord.app_commands.Group(name="token", description="Token managem
 
 client.tree.add_command(token_root)
 
+
 @token_root.command(
     description="Get the current token count of any conversation.", name="count"
 )
@@ -418,16 +419,19 @@ async def character(
 
 config_root = discord.app_commands.Group(name="config", description="Group management")
 
-personality_root = discord.app_commands.Group(name="personality", description="Personality management")
+personality_root = discord.app_commands.Group(
+    name="personality", description="Personality management"
+)
 
 config_root.add_command(personality_root)
 client.tree.add_command(config_root)
+
 
 @personality_root.command(name="set", description="Sets channel wide personality")
 @discord.app_commands.describe(personality="Maws new personality")
 async def personality_set(
     interaction: discord.Interaction,
-    personality: discord.app_commands.Range[str, 10, 1500]
+    personality: discord.app_commands.Range[str, 10, 1500],
 ):
     config_path = get_path("maw", "config", interaction)
     config_file = Config(config_path)
@@ -454,11 +458,13 @@ async def personality_reset(
 
 
 @config_root.command(name="style", description="Sets channel wide typing style")
-@discord.app_commands.choices(choice=[
-    discord.app_commands.Choice(name="Short messages", value="0"),
-    discord.app_commands.Choice(name="Medium messages", value="1"),
-    discord.app_commands.Choice(name="Long messages", value="2")
-])
+@discord.app_commands.choices(
+    choice=[
+        discord.app_commands.Choice(name="Short messages", value="0"),
+        discord.app_commands.Choice(name="Medium messages", value="1"),
+        discord.app_commands.Choice(name="Long messages", value="2"),
+    ]
+)
 async def style_set(
     interaction: discord.Interaction,
     choice: discord.app_commands.Choice[str],

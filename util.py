@@ -28,6 +28,7 @@ class MawClient(discord.Client):
     async def setup_hook(self):
         await self.tree.sync()
 
+
 def init():
     load_dotenv()
     token = os.getenv("DISCORD_TOKEN")

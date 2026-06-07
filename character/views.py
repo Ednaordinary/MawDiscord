@@ -434,6 +434,7 @@ class ScrollRedoView(discord.ui.View):
             content=self.get_thoughts()[:char_lim], ephemeral=True
         )
 
+
 class PromptSelect(discord.ui.Select):
     def __init__(self, parent: ScrollRedoView):
         super().__init__(
@@ -447,8 +448,10 @@ class PromptSelect(discord.ui.Select):
         answer = self.pv.get_answer()
         message = Message(interaction.message.id, answer, "assistant")
         self.pv.context.history.edit_message(message)
-        await interaction.response.edit_message(content=answer[:char_lim] if answer != "" else "...", view=self)
-        
+        await interaction.response.edit_message(
+            content=answer[:char_lim] if answer != "" else "...", view=self
+        )
+
 
 class EditModal(discord.ui.Modal):
     def __init__(self, original_content, message_id, role, history):
