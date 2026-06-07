@@ -12,6 +12,7 @@ from ..vram import Vram
 
 vram = Vram()
 
+
 class Exl3ModelHandler(ModelHandler):
     def __init__(self, model_id, cache_size, cache_bits, loop, draft=None):
         super().__init__()
@@ -21,17 +22,26 @@ class Exl3ModelHandler(ModelHandler):
         self.loop = loop
         self.draft = draft
         self.load_progress = Queue()
+
     def load_callback(self, current, total):
         if total != 0:
-            print(int(100*(current / total)), end="\r")
+            print(int(100 * (current / total)), end="\r")
             self.load_progress.put(tuple((current, total)))
+
     def _load(self):
         try:
-            self.model = Exl3Engine(self.model_id, self.cache_size, self.cache_bits, self.loop, self.load_callback)
+            self.model = Exl3Engine(
+                self.model_id,
+                self.cache_size,
+                self.cache_bits,
+                self.loop,
+                self.load_callback,
+            )
         except Exception as e:
             print(repr(e))
             print(traceback.format_exc())
         self.load_progress.put(True)
+
     def load(self):
         threading.Thread(target=self._load).start()
         while True:
@@ -40,6 +50,7 @@ class Exl3ModelHandler(ModelHandler):
                 break
             else:
                 yield prog
+
     def unload(self):
         try:
             self.allocation_lock = True
@@ -51,12 +62,16 @@ class Exl3ModelHandler(ModelHandler):
             print(repr(e))
             print(traceback.format_exc())
 
+
 class Exl3ModelHandlerLazy(Exl3ModelHandler):
-    def __init__(self, model_id, cache_size, cache_bits, loop, timeout=10 * 60, draft=None):
+    def __init__(
+        self, model_id, cache_size, cache_bits, loop, timeout=10 * 60, draft=None
+    ):
         super().__init__(model_id, cache_size, cache_bits, loop, draft=draft)
         self.timeout = timeout
         self.timeout_lock = False
         self.current_timeout = None
+
     def deallocate(self):
         self.users -= 1
         if self.users < 0:
@@ -69,6 +84,7 @@ class Exl3ModelHandlerLazy(Exl3ModelHandler):
             return 0
         if self.users == 0:
             self.alloc_at = None
+
     def unload(self):
         try:
             if not self.timeout_lock:

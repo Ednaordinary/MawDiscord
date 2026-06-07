@@ -8,7 +8,8 @@ import sys
 import os
 
 from exllamav3 import ComboSampler, CustomSampler
-#from exllamav2.generator import ExLlamaV2Sampler
+
+# from exllamav2.generator import ExLlamaV2Sampler
 from exllamav3.generator.sampler.custom import *
 
 from .views import ScrollRedoView
@@ -16,18 +17,20 @@ from .history import Message
 
 verbose = True
 resp_count = 5
-#stop_token = "<｜end▁of▁sentence｜>"
+# stop_token = "<｜end▁of▁sentence｜>"
 stop_token = "<|im_end|>"
+
 
 class SillySampler(CustomSampler):
     """
     Single class with an argument for each sampling step
     """
+
     def __init__(
         self,
         rep_p: float = 1.0,
         freq_p: float = 0.0,
-        pres_p: float = 1.0, # be careful with this!
+        pres_p: float = 1.0,  # be careful with this!
         rep_sustain_range: int = int(10e7),
         rep_decay_range: int = 0,
         temperature: float = 1.0,
@@ -42,29 +45,38 @@ class SillySampler(CustomSampler):
         ]
 
         if temperature == 0.0 or top_k == 1:
-            stack += [
-                SS_Argmax()
-            ]
+            stack += [SS_Argmax()]
         else:
             stack += [
                 SS_TopK(top_k),
                 SS_TopP(top_p),
                 SS_MinP(min_p),
                 SS_Temperature(temperature),
-                SS_Sample()
+                SS_Sample(),
             ]
 
         super().__init__(stack)
 
-def run_handler(idx, engine, history, view, token_count, tokenizer, char, image_embeds=None):
-    if verbose: print("Running handler", idx)
+
+def run_handler(
+    idx, engine, history, view, token_count, tokenizer, char, image_embeds=None
+):
+    if verbose:
+        print("Running handler", idx)
     try:
         temp = random.randint(600, 2000) / 1000
         view.set_temp(idx, temp)
         sampler = SillySampler(temperature=temp)
         answer = ""
         count = 0
-        for i in engine.generate(history, add_bos=False, stop_token=stop_token, max_tokens=1024 * 32, sampler=sampler, image_embeds=image_embeds):
+        for i in engine.generate(
+            history,
+            add_bos=False,
+            stop_token=stop_token,
+            max_tokens=1024 * 32,
+            sampler=sampler,
+            image_embeds=image_embeds,
+        ):
             if isinstance(i, bool):
                 pass
             else:
@@ -78,22 +90,41 @@ def run_handler(idx, engine, history, view, token_count, tokenizer, char, image_
         print(traceback.format_exc())
     view.complete_answer(idx)
     token_count.req_count.inc()
-    if verbose: print("Handler", idx, "exit")
+    if verbose:
+        print("Handler", idx, "exit")
+
 
 def fake_handler(engine, history):
     # this is just to kick start the first few cache pages, otherwise the first gen becomes very slow for some reason
     pass
 
-async def get_scroll_view(context, tools, edit, queue, loop, cutoff, continue_request, req_count):
+
+async def get_scroll_view(
+    context, tools, edit, queue, loop, cutoff, continue_request, req_count
+):
     # answers, history, user_message, message, prompt, tools, idx, edit, queue, loop, timeout, cutoff, continue_request, req_count
-    view_kwargs = {"answers": [""]*resp_count, "context": context, "tools": tools, "edit": edit, "queue": queue, "loop": loop, "timeout": None, "cutoff": cutoff, "continue_request": continue_request, "req_count": req_count}
+    view_kwargs = {
+        "answers": [""] * resp_count,
+        "context": context,
+        "tools": tools,
+        "edit": edit,
+        "queue": queue,
+        "loop": loop,
+        "timeout": None,
+        "cutoff": cutoff,
+        "continue_request": continue_request,
+        "req_count": req_count,
+    }
     return ScrollRedoView(**view_kwargs)
+
 
 class Request:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
     def handle(self):
         pass
+
 
 class RequestContext:
     def __init__(self, message, bot_message, history, prompt, char, images=None):
@@ -104,39 +135,93 @@ class RequestContext:
         self.char = char
         self.images = images
 
-class TokenCount():
+
+class TokenCount:
     def __init__(self, req_count):
         self.tokens = 0
         self.req_count = req_count
+
     def inc(self):
         self.tokens += 1
+
     def get(self):
         return self.tokens
+
 
 class CharacterRequest(Request):
     # __init__: context, cutoff, tools, edit, req_count
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
         try:
             self.context.history.workers.append(int(self.context.bot_message.id))
-            self.context.history.add_message(Message(self.context.message.id, self.context.prompt, "user", images=self.context.images))
-            tool_prompt = self.context.history.sys + "\n\n" + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
+            self.context.history.add_message(
+                Message(
+                    self.context.message.id,
+                    self.context.prompt,
+                    "user",
+                    images=self.context.images,
+                )
+            )
+            tool_prompt = (
+                self.context.history.sys
+                + "\n\n"
+                + "\n".join([x.doc for x in self.tools if hasattr(x, "doc")])
+            )
             self.context.history.edit_message(Message(0, tool_prompt, "system"))
-            view = asyncio.run_coroutine_threadsafe(coro=get_scroll_view(self.context, self.tools, self.edit, channel_queue, discord_loop, self.cutoff, ScrollRequest, self.req_count), loop=discord_loop).result()
+            view = asyncio.run_coroutine_threadsafe(
+                coro=get_scroll_view(
+                    self.context,
+                    self.tools,
+                    self.edit,
+                    channel_queue,
+                    discord_loop,
+                    self.cutoff,
+                    ScrollRequest,
+                    self.req_count,
+                ),
+                loop=discord_loop,
+            ).result()
             vision = hasattr(engine, "vision")
-            history = self.context.history.to_tokenizer(limit=self.context.message.id, vision=engine.vision, exl_tokenizer=engine.tokenizer) if vision else self.context.history.to_tokenizer(limit=self.context.message.id)
+            history = (
+                self.context.history.to_tokenizer(
+                    limit=self.context.message.id,
+                    vision=engine.vision,
+                    exl_tokenizer=engine.tokenizer,
+                )
+                if vision
+                else self.context.history.to_tokenizer(limit=self.context.message.id)
+            )
             if isinstance(history, tuple):
                 history, image_embeds = history
-                history = tokenizer.history_to_tokens(history, cutoff=self.cutoff, embeds=image_embeds)
-            else:                
+                history = tokenizer.history_to_tokens(
+                    history, cutoff=self.cutoff, embeds=image_embeds
+                )
+            else:
                 history = tokenizer.history_to_tokens(history, cutoff=self.cutoff)
             threads = []
             token_count = TokenCount(self.req_count)
-            #engine.kickstart(history) # increase first response speed (sillies)
+            # engine.kickstart(history) # increase first response speed (sillies)
             for i in range(resp_count):
-                if verbose: print("Starting handler:", i, image_embeds)
-                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, view, token_count, tokenizer, self.context.char], kwargs={"image_embeds": image_embeds}))
+                if verbose:
+                    print("Starting handler:", i, image_embeds)
+                threads.append(
+                    threading.Thread(
+                        target=run_handler,
+                        args=[
+                            i,
+                            engine,
+                            history,
+                            view,
+                            token_count,
+                            tokenizer,
+                            self.context.char,
+                        ],
+                        kwargs={"image_embeds": image_embeds},
+                    )
+                )
             for i in threads:
-                time.sleep(0.01) # Start in order so they also appear completed in order
+                time.sleep(
+                    0.01
+                )  # Start in order so they also appear completed in order
                 i.start()
             for i in threads:
                 i.join()
@@ -146,29 +231,59 @@ class CharacterRequest(Request):
             print(repr(e))
             print(traceback.format_exc())
             return token_count.get()
+
     def update_progress(self, content, discord_loop):
-        asyncio.run_coroutine_threadsafe(coro=self.context.bot_message.edit(content=content), loop=discord_loop)
+        asyncio.run_coroutine_threadsafe(
+            coro=self.context.bot_message.edit(content=content), loop=discord_loop
+        )
+
 
 class ScrollRequest(Request):
     # __init__: # context, view, idxs
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
         try:
             self.context.history.workers.append(int(self.context.bot_message.id))
-            self.context.history.add_message(Message(self.context.message.id, self.context.prompt, "user"))
+            self.context.history.add_message(
+                Message(self.context.message.id, self.context.prompt, "user")
+            )
             vision = hasattr(engine, "vision")
-            history = self.context.history.to_tokenizer(limit=self.context.message.id, vision=engine.vision, exl_tokenizer=engine.tokenizer) if vision else self.context.history.to_tokenizer(limit=self.context.message.id)
+            history = (
+                self.context.history.to_tokenizer(
+                    limit=self.context.message.id,
+                    vision=engine.vision,
+                    exl_tokenizer=engine.tokenizer,
+                )
+                if vision
+                else self.context.history.to_tokenizer(limit=self.context.message.id)
+            )
             if isinstance(history, tuple):
                 history, image_embeds = history
-                history = tokenizer.history_to_tokens(history, cutoff=self.view.cutoff, embeds=image_embeds)
-            else:                
+                history = tokenizer.history_to_tokens(
+                    history, cutoff=self.view.cutoff, embeds=image_embeds
+                )
+            else:
                 history = tokenizer.history_to_tokens(history, cutoff=self.view.cutoff)
 
             threads = []
             token_count = TokenCount(self.view.req_count)
-            #engine.kickstart(history) # increase first response speed (sillies)
+            # engine.kickstart(history) # increase first response speed (sillies)
             for i in self.idxs:
-                if verbose: print("Starting handler", i)
-                threads.append(threading.Thread(target=run_handler, args=[i, engine, history, self.view, token_count, tokenizer, self.context.char]))
+                if verbose:
+                    print("Starting handler", i)
+                threads.append(
+                    threading.Thread(
+                        target=run_handler,
+                        args=[
+                            i,
+                            engine,
+                            history,
+                            self.view,
+                            token_count,
+                            tokenizer,
+                            self.context.char,
+                        ],
+                    )
+                )
             for i in threads:
                 time.sleep(0.01)
                 i.start()
@@ -178,6 +293,9 @@ class ScrollRequest(Request):
             return token_count.get()
         except Exception as e:
             print(traceback.format_exc())
+
     def update_progress(self, content, discord_loop):
         if self.view.get_idx() in self.idxs:
-            asyncio.run_coroutine_threadsafe(coro=self.context.bot_message.edit(content=content), loop=discord_loop)
+            asyncio.run_coroutine_threadsafe(
+                coro=self.context.bot_message.edit(content=content), loop=discord_loop
+            )

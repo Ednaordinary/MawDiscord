@@ -2,11 +2,13 @@
 
 import time
 
-model_manager_path = "../ModelManager/allocation.txt" # This will be different depending on the path to the model manager
+model_manager_path = "../ModelManager/allocation.txt"  # This will be different depending on the path to the model manager
+
 
 class Vram:
     def __init__(self):
         pass
+
     def allocate(self, name):
         allocate = True
         with open(model_manager_path, "r") as allocation_file:
@@ -15,11 +17,11 @@ class Vram:
                 allocate = False
         if allocate:
             with open(model_manager_path, "a") as allocation_file:
-                allocation_file.write(name+"\n")
+                allocation_file.write(name + "\n")
 
     def deallocate(self, name):
         with open(model_manager_path, "r") as allocation_file:
-            lines = allocation_file.readlines() 
+            lines = allocation_file.readlines()
         with open(model_manager_path, "w") as allocation_file:
             for i in lines:
                 if i[:-1] != name:

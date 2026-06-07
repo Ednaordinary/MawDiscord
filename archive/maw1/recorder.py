@@ -14,13 +14,14 @@ import array
 import audioop
 
 __all__ = [
-    'VoiceRecvClient',
+    "VoiceRecvClient",
 ]
 
 log = logging.getLogger(__name__)
 
 
 # this file takes HEAVY inspiration from both https://github.com/imayhaveborkedit/discord-ext-voice-recv/ and https://github.com/nextcord/nextcord/pull/1113
+
 
 class VoiceRecvClient(nextcord.VoiceClient):
     def __init__(self, client: nextcord.Client, channel: nextcord.abc.Connectable):
@@ -31,7 +32,9 @@ class VoiceRecvClient(nextcord.VoiceClient):
 
     async def listen(self):
         """Just yields received data. It's your choice what to do after that :). Doesn't stop until the client disconnects."""
-        await self.ws.loop.sock_connect(self.socket, (self.endpoint_ip, self.voice_port))
+        await self.ws.loop.sock_connect(
+            self.socket, (self.endpoint_ip, self.voice_port)
+        )
         connect_time = time.time()  # Sometimes likes to stop recieving data? so disconnect and reconnect every once in a while.
         error_count = 0
         while self.is_connected() and error_count < 10:
@@ -88,14 +91,14 @@ class BytesSRAudioSource(sr.AudioSource):
 
     def __enter__(self):
         if self._entered:
-            log.warning('Already entered sr audio source')
+            log.warning("Already entered sr audio source")
         self._entered = True
         return self
 
     def __exit__(self, *exc) -> None:
         self._entered = False
         if any(exc):
-            log.exception('Error closing sr audio source')
+            log.exception("Error closing sr audio source")
 
     def read(self, size: int) -> bytes:
         for _ in range(10):
@@ -105,7 +108,7 @@ class BytesSRAudioSource(sr.AudioSource):
                 break
         else:
             if len(self.buffer) == 0:
-                return b''
+                return b""
 
         chunksize = size * self.CHANNELS
         audiochunk = self.buffer[:chunksize].tobytes()

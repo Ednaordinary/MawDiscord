@@ -15,10 +15,12 @@ logger = logging.getLogger(__name__)
 role_trans = {"user": "u", "system": "s", "assistant": "c"}
 role_trans_rev = {"u": "user", "s": "system", "c": "assistant"}
 
+
 def image_to_bytes(image: Image.Image):
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
 
 def bytes_to_image(image: str):
     data = base64.b64decode(image)
@@ -28,9 +30,11 @@ def bytes_to_image(image: str):
         print(traceback.format_exc())
         return None
 
+
 class MessageJson(dict):
     def __init__(self, **kwargs):
         dict.__init__(self, **kwargs)
+
 
 class Message:
     def __init__(self, message_id, content, role, images=None):
@@ -40,20 +44,47 @@ class Message:
         if images:
             self.images = images
             # Images can be instantiated from both current memory and saved history.
-            self.images = [x for x in map(lambda x: bytes_to_image(x) if isinstance(x, str) else x, self.images) if x is not None]
+            self.images = [
+                x
+                for x in map(
+                    lambda x: bytes_to_image(x) if isinstance(x, str) else x,
+                    self.images,
+                )
+                if x is not None
+            ]
+
     def __str__(self):
-        return "Message: (" + str(self.message_id) + " " + str(self.role) + " " + (str(self.images) if "images" in self.__dict__ else "") + ")"
+        return (
+            "Message: ("
+            + str(self.message_id)
+            + " "
+            + str(self.role)
+            + " "
+            + (str(self.images) if "images" in self.__dict__ else "")
+            + ")"
+        )
+
     def __repr__(self):
         return self.__str__()
+
     def to_json(self):
         if "images" in self.__dict__:
-            return MessageJson(message_id=self.message_id, content=self.content, role=self.role, images=[image_to_bytes(x) for x in self.images])
-        return MessageJson(message_id=self.message_id, content=self.content, role=self.role)
+            return MessageJson(
+                message_id=self.message_id,
+                content=self.content,
+                role=self.role,
+                images=[image_to_bytes(x) for x in self.images],
+            )
+        return MessageJson(
+            message_id=self.message_id, content=self.content, role=self.role
+        )
+
 
 class History:
     """
     Message history autologged to a custom file format. You should use JsonHistory in most cases.
     """
+
     def __init__(self, path, sys=None):
         self.history = []
         self.path = path
@@ -61,6 +92,7 @@ class History:
         self.usable = True
         self.workers = []
         self.sys = sys if sys != None else self.get_sys()
+
     def touch_history(self):
         logger.debug("touch_history called")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -72,29 +104,37 @@ class History:
             logger.debug("adding system message")
             self.add_message(Message(0, self.sys, "system"))
             logger.debug("(sys): " + str(self.history))
+
     def get_sys(self):
         self.read_history()
         for x in self.history:
             if x.message_id == 0:
                 return x.content
         return None
+
     def renew_sys(self):
         self.edit_message(Message(0, self.sys, "system"))
+
     def write_history(self):
         logger.debug("write_history called")
         logger.debug("(write): " + str(self.history))
         content = ""
         for message in self.history:
-            content += (role_trans[message.role] if message.role in role_trans.keys() else "c") + "|"
+            content += (
+                role_trans[message.role] if message.role in role_trans.keys() else "c"
+            ) + "|"
             content += str(message.message_id) + "|"
-            content += message.content.replace("\n", r"\\n").replace("\r", r"\\n") + "\n"
+            content += (
+                message.content.replace("\n", r"\\n").replace("\r", r"\\n") + "\n"
+            )
         while self.wait:
             time.sleep(0.01)
         self.wait = True
         with open(self.path, "w") as file:
-                file.write(content)
+            file.write(content)
         self.wait = False
         self.read_history()
+
     def read_history(self, limit=None, usable=False, includes=None):
         logger.debug("read_history called")
         history = []
@@ -111,29 +151,40 @@ class History:
             for line in file:
                 line = line.replace("\n", "")
                 line = line.split("|")
-                role, message_id, content = role_trans_rev[line[0].strip()], int(line[1]), "".join(line[2:]).replace(r"\\n", "\n")
+                role, message_id, content = (
+                    role_trans_rev[line[0].strip()],
+                    int(line[1]),
+                    "".join(line[2:]).replace(r"\\n", "\n"),
+                )
                 history.append(Message(message_id, content, role))
         self.wait = False
         self.history = history
         logger.debug("(read): " + str(self.history))
         if limit != None:
-            #self.history.sort(key=lambda x: x.message_id)
+            # self.history.sort(key=lambda x: x.message_id)
             returned_history = [x for x in self.history if x.message_id <= limit]
         else:
             returned_history = self.history
         if includes != None:
-            returned_history = [x for x in returned_history if (includes in x.content) or (x.role != "assistant")]
+            returned_history = [
+                x
+                for x in returned_history
+                if (includes in x.content) or (x.role != "assistant")
+            ]
         return returned_history
+
     def append_message(self, message):
         logger.debug("append_message called")
         self.read_history()
         if message.message_id not in [x.message_id for x in self.history]:
             self.history.append(message)
             self.write_history()
+
     def add_message(self, message):
         logger.debug("add_message called")
         self.append_message(message)
         self.sort_messages()
+
     def sort_messages(self):
         # Message IDs are in order, which we can use to our advantage
         logger.debug("sort_messages called")
@@ -141,12 +192,14 @@ class History:
         self.history.sort(key=lambda x: x.message_id)
         logger.debug("(sort): " + str(self.history))
         self.write_history()
+
     def remove_message(self, message_id):
         logger.debug("remove_message called")
         self.read_history()
         self.history = [x for x in self.history if x.message_id != message_id]
         self.write_history()
         self.sort_messages()
+
     def edit_message(self, message):
         logger.debug("edit_message called")
         self.usable = False
@@ -157,11 +210,22 @@ class History:
             for idx, i in enumerate(self.history):
                 if i.message_id == message.message_id:
                     self.remove_message(message.message_id)
-                    self.add_message(Message(message.message_id, message.content, i.role))
+                    self.add_message(
+                        Message(message.message_id, message.content, i.role)
+                    )
                     break
             self.write_history()
         self.usable = True
-    def to_tokenizer(self, group=True, grouper="\n", limit=None, includes=None, vision=None, exl_tokenizer=None):
+
+    def to_tokenizer(
+        self,
+        group=True,
+        grouper="\n",
+        limit=None,
+        includes=None,
+        vision=None,
+        exl_tokenizer=None,
+    ):
         logger.debug("to_tokenizer called")
         image_embeds = []
         if group:
@@ -179,9 +243,23 @@ class History:
                 else:
                     if group != "":
                         if len(group_images) != 0 and vision != None:
-                            embeds = [vision.get_image_embeddings(tokenizer = exl_tokenizer, image=x) for x in group_images]
+                            embeds = [
+                                vision.get_image_embeddings(
+                                    tokenizer=exl_tokenizer, image=x
+                                )
+                                for x in group_images
+                            ]
                             image_embeds.extend(embeds)
-                            history.append({"role": last_role, "content": "\n".join([ie.text_alias for ie in embeds]) + "\n" + group})
+                            history.append(
+                                {
+                                    "role": last_role,
+                                    "content": "\n".join(
+                                        [ie.text_alias for ie in embeds]
+                                    )
+                                    + "\n"
+                                    + group,
+                                }
+                            )
                         else:
                             history.append({"role": last_role, "content": group})
                     group_images = []
@@ -191,9 +269,19 @@ class History:
                         group_images.extend(i.images)
             if group != "":
                 if len(group_images) != 0 and vision != None:
-                    embeds = [vision.get_image_embeddings(tokenizer = exl_tokenizer, image=x) for x in group_images]
+                    embeds = [
+                        vision.get_image_embeddings(tokenizer=exl_tokenizer, image=x)
+                        for x in group_images
+                    ]
                     image_embeds.extend(embeds)
-                    history.append({"role": last_role, "content": "\n".join([ie.text_alias for ie in embeds]) + "\n" + group})
+                    history.append(
+                        {
+                            "role": last_role,
+                            "content": "\n".join([ie.text_alias for ie in embeds])
+                            + "\n"
+                            + group,
+                        }
+                    )
                 else:
                     history.append({"role": last_role, "content": group})
             return history, image_embeds if image_embeds != None else history
@@ -201,21 +289,34 @@ class History:
             history = []
             for i in self.read_history(limit=limit, usable=True):
                 if "images" in i.__dict__ and vision != None:
-                    embeds = [vision.get_image_embeddings(tokenizer = exl_tokenizer, image=x) for x in i.images]
+                    embeds = [
+                        vision.get_image_embeddings(tokenizer=exl_tokenizer, image=x)
+                        for x in i.images
+                    ]
                     image_embeds.extend(embeds)
-                    history.append({"role": i.role, "content": "\n".join([ie.text_alias for ie in embeds]) + "\n" + i.content})
+                    history.append(
+                        {
+                            "role": i.role,
+                            "content": "\n".join([ie.text_alias for ie in embeds])
+                            + "\n"
+                            + i.content,
+                        }
+                    )
                 else:
                     history.append({"role": i.role, "content": i.content})
             return history, image_embeds if image_embeds != None else history
+
     def to_unwatched(self):
         unwatched = UnwatchedHistory(self.path, self.sys)
         unwatched.copy_history(self.history)
         return unwatched
 
+
 class JsonHistory(History):
     """
     Message history autologged to a JSON file
     """
+
     def __init__(self, path, sys=None):
         self.history = []
         self.path = path
@@ -223,6 +324,7 @@ class JsonHistory(History):
         self.usable = True
         self.workers = []
         self.sys = sys if sys != None else self.get_sys()
+
     def touch_history(self):
         logger.debug("touch_history called")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -234,14 +336,17 @@ class JsonHistory(History):
             logger.debug("adding system message")
             self.add_message(Message(0, self.sys, "system"))
             logger.debug("(sys): " + str(self.history))
+
     def get_sys(self):
         self.read_history()
         for x in self.history:
             if x.message_id == 0:
                 return x.content
         return None
+
     def renew_sys(self):
         self.edit_message(Message(0, self.sys, "system"))
+
     def write_history(self):
         logger.debug("write_history called")
         logger.debug("(write): " + str(self.history))
@@ -253,6 +358,7 @@ class JsonHistory(History):
             json.dump(json_history, file, indent=4)
         self.wait = False
         self.read_history()
+
     def read_history(self, limit=None, usable=False, includes=None):
         logger.debug("read_history called")
         history = []
@@ -268,7 +374,10 @@ class JsonHistory(History):
         with open(self.path, "r") as file:
             try:
                 history = json.load(file)
-                self.history = [(Message(**i) if not isinstance(i, Message) else Message) for i in history]
+                self.history = [
+                    (Message(**i) if not isinstance(i, Message) else Message)
+                    for i in history
+                ]
             except Exception as e:
                 file_read = file.read()
                 if file_read.strip() == "":
@@ -279,30 +388,43 @@ class JsonHistory(History):
         self.wait = False
         logger.debug("(read): " + str(self.history))
         if limit != None:
-            #self.history.sort(key=lambda x: x.message_id)
+            # self.history.sort(key=lambda x: x.message_id)
             returned_history = [x for x in self.history if x.message_id <= limit]
         else:
             returned_history = self.history
         if includes != None:
-            returned_history = [x for x in returned_history if (includes in x.content) or (x.role != "assistant")]
+            returned_history = [
+                x
+                for x in returned_history
+                if (includes in x.content) or (x.role != "assistant")
+            ]
         return returned_history
+
 
 class UnwatchedHistory(History):
     """
     Works similarly to normal history, except content will stay in memory and not be updated to file.
     """
+
     def copy_history(self, history):
         self.history = history
+
     def touch_history(self):
         pass
+
     def write_history(self):
         pass
+
     def read_history(self, limit=None, usable=False, includes=None):
         if limit != None:
-            #self.history.sort(key=lambda x: x.message_id)
+            # self.history.sort(key=lambda x: x.message_id)
             returned_history = [x for x in self.history if x.message_id <= limit]
         else:
             returned_history = self.history
         if includes != None:
-            returned_history = [x for x in returned_history if (includes in x.content) or (x.role != "assistant")]
+            returned_history = [
+                x
+                for x in returned_history
+                if (includes in x.content) or (x.role != "assistant")
+            ]
         return returned_history

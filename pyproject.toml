@@ -5,16 +5,18 @@ description = "Maw for Discord"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "discord-py>=2.7.1",
     "exllamav3>=0.0.39",
     "flash-attn>=2.7.4.post1",
-    "nextcord>=3.0.1",
     "pillow>=12.2.0",
     "psutil>=7.2.2",
     "pydantic==2.11",
     "python-dotenv>=1.0.1",
     "requests>=2.34.2",
+    "ruff>=0.15.16",
     "tokenizers>=0.21.0",
-    "torch>=2.10",
+    "torch>=2.12",
     "transformers>=4.49.0",
+    "ty>=0.0.44",
     "ujson>=5.12.1",
 ]

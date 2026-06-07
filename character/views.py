@@ -1,9 +1,10 @@
-import nextcord as discord
+import discord
 from .history import Message
 from .config import Config
 
 import sys
-sys.path.append("..") # silly
+
+sys.path.append("..")  # silly
 from util import get_path, get_history, FakeHistObj
 
 import traceback
@@ -16,13 +17,13 @@ verbose = False
 resp_count = 5
 char_lim = 1999
 
-think_regex = re.compile(r'[\s\S]*?<\/think>')
-ans_regex = re.compile(r'<\/think>[\s\S]*', flags=re.M)
+think_regex = re.compile(r"[\s\S]*?<\/think>")
+ans_regex = re.compile(r"<\/think>[\s\S]*", flags=re.M)
 
 
 def think_bar():
     # spinner!
-    #frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    # frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     frames = [
         "█▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
         "██▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
@@ -115,11 +116,12 @@ def think_bar():
         "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
         "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
         "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
-        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"
+        "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
     ]
-    idx = int(time.perf_counter() / 0.1) 
+    idx = int(time.perf_counter() / 0.1)
     frame = frames[(idx % len(frames))]
     return "`" + frame + "`"
+
 
 async def edit(message, content, view):
     try:
@@ -127,16 +129,24 @@ async def edit(message, content, view):
     except:
         print(traceback.format_exc())
 
+
 class ScrollRedoView(discord.ui.View):
     def __init__(self, **kwargs):
         # answers, context, tools, idx, edit, queue, loop, timeout, cutoff, continue_request
         self.__dict__.update(kwargs)
         super().__init__(timeout=self.timeout)
         self.idx = 0
-        self.tok_count = [0]*len(self.answers)
-        self.completed = [False]*len(self.answers)
-        self.temps = [0.0]*len(self.answers)
-        self.options = [discord.SelectOption(label=think_bar(), value=str(idx), default=(idx==self.idx)) for idx in range(len(self.answers))]
+        self.tok_count = [0] * len(self.answers)
+        self.completed = [False] * len(self.answers)
+        self.temps = [0.0] * len(self.answers)
+        self.prompt_options = [
+            discord.SelectOption(
+                label=think_bar(), value=str(idx), default=(idx == self.idx)
+            )
+            for idx in range(len(self.answers))
+        ]
+        self.prompt_select = PromptSelect(self)
+        self.add_item(self.prompt_select)
         self.limiter = time.perf_counter()
         self.runtools = self.get_runtools()
         self.menu = self.get_menu()
@@ -145,71 +155,103 @@ class ScrollRedoView(discord.ui.View):
         self.show_menu = False
         self.handle_disabled()
         self.running_update = False
+
     def get_idx(self):
         return self.idx
+
     def set_idx(self):
         self.idx = idx
+
     def set_temp(self, idx, temp):
         self.temps[idx] = temp
+
     def update_answer(self, idx, updated, tok_count, limit=True):
         self.answers[idx] = updated
         self.tok_count[idx] = tok_count
         if self.running_update == True:
             return
         self.running_update = True
-        #if idx == self.idx:
-        #limiter = math.log(len(set(self.context.history.workers))**1.2) + 1.2
+        # if idx == self.idx:
+        # limiter = math.log(len(set(self.context.history.workers))**1.2) + 1.2
         limiter = 1.2
         if (self.limiter + limiter < time.perf_counter()) or limit == False:
             self.limiter = time.perf_counter()
-            #if idx == self.idx:
+            # if idx == self.idx:
             answer = self.get_answer()
-            self.context.history.edit_message(Message(self.context.bot_message.id, answer, "assistant"))
-            if verbose: print("Updating for", idx, "|", answer[:10])
+            self.context.history.edit_message(
+                Message(self.context.bot_message.id, answer, "assistant")
+            )
+            if verbose:
+                print("Updating for", idx, "|", answer[:10])
             self.handle_disabled()
-            #asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(content=answer[:char_lim], view=self), self.loop)
-            asyncio.run_coroutine_threadsafe(edit(message=self.context.bot_message, content=answer[:char_lim], view=self), self.loop)
+            # asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(content=answer[:char_lim], view=self), self.loop)
+            asyncio.run_coroutine_threadsafe(
+                edit(
+                    message=self.context.bot_message,
+                    content=answer[:char_lim],
+                    view=self,
+                ),
+                self.loop,
+            )
         self.running_update = False
+
     def complete_answer(self, idx):
         self.completed[idx] = True
         self.handle_disabled()
         answer = self.get_answer()
         if self.idx == idx:
-            asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(content=answer[:char_lim], view=self), self.loop)
+            asyncio.run_coroutine_threadsafe(
+                self.context.bot_message.edit(content=answer[:char_lim], view=self),
+                self.loop,
+            )
         elif self.completed[self.idx]:
-            asyncio.run_coroutine_threadsafe(self.context.bot_message.edit(view=self), self.loop)
+            asyncio.run_coroutine_threadsafe(
+                self.context.bot_message.edit(view=self), self.loop
+            )
+
     def get_runtools(self):
         for child in self.children:
             if not isinstance(child, discord.ui.Button):
                 continue
             if child.label == "▶️":
                 return child
+
     def get_menu(self):
         for child in self.children:
-            if isinstance(child, discord.ui.StringSelect):
+            if isinstance(child, discord.ui.Select):
                 return child
+
     def get_edit_button(self):
         for child in self.children:
             if not isinstance(child, discord.ui.Button):
                 continue
             if child.label == "🖊️":
                 return child
+
     def get_thought_button(self):
         for child in self.children:
             if not isinstance(child, discord.ui.Button):
                 continue
             if child.label == "💭":
                 return child
+
     def handle_disabled(self):
         children = self.children
         if self.idx == len(self.answers) - 1:
             try:
                 idxs = [x + len(self.answers) for x in range(resp_count)]
-                self.answers.extend([""]*resp_count)
-                self.completed.extend([False]*resp_count)
-                self.tok_count.extend([0]*resp_count)
-                self.temps.extend([0.0]*resp_count)
-                self.options.extend([discord.SelectOption(label=think_bar(), value=str(idx), default=(idx==self.idx)) for idx in idxs])
+                self.answers.extend([""] * resp_count)
+                self.completed.extend([False] * resp_count)
+                self.tok_count.extend([0] * resp_count)
+                self.temps.extend([0.0] * resp_count)
+                self.prompt_options.extend(
+                    [
+                        discord.SelectOption(
+                            label=think_bar(), value=str(idx), default=(idx == self.idx)
+                        )
+                        for idx in idxs
+                    ]
+                )
                 req_kwargs = {"context": self.context, "view": self, "idxs": idxs}
                 scroll_request = self.continue_request(**req_kwargs)
                 self.queue.put(scroll_request)
@@ -223,16 +265,21 @@ class ScrollRedoView(discord.ui.View):
             children.append(self.thought_button)
         if self.run_tools not in children:
             children.append(self.run_tools)
-        for child in children: 
-            if isinstance(child, discord.ui.StringSelect):
+        for child in children:
+            if isinstance(child, discord.ui.Select):
                 if self.show_menu == True:
                     pass
-                    #child.options = [discord.SelectOption(label=(("(" + str(round(self.temps[idx], 2)) + ") " + self.get_answer(idx))[:99]), value=str(idx), default=(idx==self.idx)) for idx in range(len(self.answers))][:25]
-                    for idx, option in enumerate(self.options):
-                        option.label = (("(" + str(round(self.temps[idx], 2)) + ") " + self.get_answer(idx))[:99])
+                    # child.options = [discord.SelectOption(label=(("(" + str(round(self.temps[idx], 2)) + ") " + self.get_answer(idx))[:99]), value=str(idx), default=(idx==self.idx)) for idx in range(len(self.answers))][:25]
+                    for idx, option in enumerate(self.prompt_options):
+                        option.label = (
+                            "("
+                            + str(round(self.temps[idx], 2))
+                            + ") "
+                            + self.get_answer(idx)
+                        )[:99]
                         option.value = str(idx)
-                        option.default = (idx==self.idx)
-                    child.options = self.options[:25]
+                        option.default = idx == self.idx
+                    child.options = self.prompt_options[:25]
                 else:
                     if self.menu in children:
                         children = [x for x in children if x != self.menu]
@@ -266,6 +313,7 @@ class ScrollRedoView(discord.ui.View):
                 else:
                     child.label = str(self.idx + 1)
         self.children = children
+
     def get_answer(self, idx=None, do_filter=True, return_think=False):
         if idx == None:
             idx = self.idx
@@ -284,10 +332,20 @@ class ScrollRedoView(discord.ui.View):
                     answer = tool.filter(answer)
         else:
             tok_count = self.tok_count[idx]
-            answer = think_bar() + " (" + (str(tok_count) if tok_count < 1000 else (str(int(tok_count/1000)) + "k")) + " tok)"
+            answer = (
+                think_bar()
+                + " ("
+                + (
+                    str(tok_count)
+                    if tok_count < 1000
+                    else (str(int(tok_count / 1000)) + "k")
+                )
+                + " tok)"
+            )
         if answer == "":
             answer = "..."
         return (answer, think) if return_think else answer
+
     def get_thoughts(self):
         answer = self.answers[self.idx]
         if "</think>" not in answer:
@@ -296,32 +354,56 @@ class ScrollRedoView(discord.ui.View):
         for match in re.findall(think_regex, answer):
             thoughts.append(match.replace("</think>", ""))
         return "\n".join(thoughts)
+
     @discord.ui.button(label="⬅️", style=discord.ButtonStyle.primary)
-    async def scroll_back(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def scroll_back(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ):
         self.idx -= 1
         self.handle_disabled()
         answer = self.get_answer()
         message = Message(interaction.message.id, answer, "assistant")
         self.context.history.edit_message(message)
-        await interaction.response.edit_message(content=answer[:char_lim] if answer != "" else "", view=self)
+        await interaction.response.edit_message(
+            content=answer[:char_lim] if answer != "" else "", view=self
+        )
+
     @discord.ui.button(label="1", style=discord.ButtonStyle.grey)
     async def number(self, button: discord.ui.Button, interaction: discord.Interaction):
-        self.show_menu = not self.show_menu 
+        self.show_menu = not self.show_menu
         self.handle_disabled()
         await interaction.response.edit_message(view=self)
+
     @discord.ui.button(row=3, label="🖊️", style=discord.ButtonStyle.primary)
-    async def edit_message(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_modal(EditModal(self.get_answer(), interaction.message.id, "assistant", self.context.history))
+    async def edit_message(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ):
+        await interaction.response.send_modal(
+            EditModal(
+                self.get_answer(),
+                interaction.message.id,
+                "assistant",
+                self.context.history,
+            )
+        )
+
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.primary)
-    async def scroll_forward(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def scroll_forward(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ):
         self.idx += 1
         self.handle_disabled()
         answer = self.get_answer()
         message = Message(interaction.message.id, answer, "assistant")
         self.context.history.edit_message(message)
-        await interaction.response.edit_message(content=answer[:char_lim] if answer != "" else "...", view=self)
+        await interaction.response.edit_message(
+            content=answer[:char_lim] if answer != "" else "...", view=self
+        )
+
     @discord.ui.button(label="▶️", style=discord.ButtonStyle.green)
-    async def run_tools(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def run_tools(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ):
         answer = self.get_answer(do_filter=False)
         await interaction.response.edit_message(view=self)
         runnabletools = [i for i in self.tools if i.will_run(answer)]
@@ -330,21 +412,47 @@ class ScrollRedoView(discord.ui.View):
                 await tool.run(answer)
             except Exception as e:
                 print(repr(e))
-    @discord.ui.string_select(row=2, min_values=1, max_values=1, options=[])
-    async def select_prompt(self, select: discord.ui.StringSelect, interaction: discord.Interaction):
-        self.idx = int(select.values[0])
-        self.handle_disabled()
-        answer = self.get_answer()
-        message = Message(interaction.message.id, answer, "assistant")
-        self.context.history.edit_message(message)
-        await interaction.response.edit_message(content=answer[:char_lim] if answer != "" else "...", view=self)
+
+    # @discord.ui.string_select(row=2, min_values=1, max_values=1, options=[])
+    # async def select_prompt(
+    #     self, select: discord.ui.StringSelect, interaction: discord.Interaction
+    # ):
+    #     self.idx = int(select.values[0])
+    #     self.handle_disabled()
+    #     answer = self.get_answer()
+    #     message = Message(interaction.message.id, answer, "assistant")
+    #     self.context.history.edit_message(message)
+    #     await interaction.response.edit_message(
+    #         content=answer[:char_lim] if answer != "" else "...", view=self
+    #     )
+
     @discord.ui.button(row=3, label="💭", style=discord.ButtonStyle.grey)
-    async def send_thoughts(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_message(content=self.get_thoughts()[:char_lim], ephemeral=True)
+    async def send_thoughts(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ):
+        await interaction.response.send_message(
+            content=self.get_thoughts()[:char_lim], ephemeral=True
+        )
+
+class PromptSelect(discord.ui.Select):
+    def __init__(self, parent: ScrollRedoView):
+        super().__init__(
+            options=parent.options,
+        )
+        self.pv = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        self.pv.idx = int(self.values[0])
+        self.pv.handle_disabled()
+        answer = self.pv.get_answer()
+        message = Message(interaction.message.id, answer, "assistant")
+        self.pv.context.history.edit_message(message)
+        await interaction.response.edit_message(content=answer[:char_lim] if answer != "" else "...", view=self)
+        
 
 class EditModal(discord.ui.Modal):
     def __init__(self, original_content, message_id, role, history):
-        super().__init__(title="Edit Message", timeout = 60 * 60 * 24)
+        super().__init__(title="Edit Message", timeout=60 * 60 * 24)
         self.original_content = original_content
         self.message_id = message_id
         self.role = role
@@ -359,11 +467,12 @@ class EditModal(discord.ui.Modal):
             max_length=char_lim,
         )
         self.add_item(self.content)
-        
+
     async def callback(self, interaction: discord.Interaction):
         message = Message(self.message_id, self.content.value, self.role)
         self.history.edit_message(message)
         await interaction.response.edit_message(content=self.content.value)
+
 
 class EditButton(discord.ui.View):
     def __init__(self, history, role, message_id=None):
@@ -373,9 +482,17 @@ class EditButton(discord.ui.View):
         self.message_id = message_id
 
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.blurple)
-    async def edit_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        edit_modal = EditModal(interaction.message.content, (self.message_id if self.message_id != None else interaction.message.id), self.role, self.history)
+    async def edit_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ):
+        edit_modal = EditModal(
+            interaction.message.content,
+            (self.message_id if self.message_id != None else interaction.message.id),
+            self.role,
+            self.history,
+        )
         await interaction.response.send_modal(edit_modal)
+
 
 class ResetContextButton(discord.ui.View):
     def __init__(self, *, timeout=None, history):
@@ -383,13 +500,20 @@ class ResetContextButton(discord.ui.View):
         self.history = history
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.red)
-    async def reset_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def reset_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ):
         ignored_ids = [0]
         if len([x for x in self.history.history if x not in ignored_ids]) > 0:
-            await interaction.response.edit_message(content="Context deleted.", view=None)
+            await interaction.response.edit_message(
+                content="Context deleted.", view=None
+            )
             self.history.touch_history()
         else:
-            await interaction.response.edit_message(content="No context found to delete.", view=None)
+            await interaction.response.edit_message(
+                content="No context found to delete.", view=None
+            )
+
 
 class CharacterModal(discord.ui.Modal):
     def __init__(self, histories):
@@ -455,13 +579,17 @@ class CharacterModal(discord.ui.Modal):
             config["name"] = self.name.value
             config_file.write(config)
             await root.edit(view=EditButton(history, "system", message_id=0))
-            env_message = await thread.send(self.environment.value, view=EditButton(history, "system"))
+            env_message = await thread.send(
+                self.environment.value, view=EditButton(history, "system")
+            )
             history.add_message(Message(env_message.id, env_message.content, "system"))
 
-class HookMessage():
+
+class HookMessage:
     def __init__(self, id, hook, thread):
         self.id = id
         self.hook = hook
         self.thread = thread
+
     async def edit(self, **kwargs):
         await self.hook.edit_message(**kwargs, message_id=self.id, thread=self.thread)

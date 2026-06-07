@@ -5,6 +5,7 @@ from ..vram import Vram
 
 vram = Vram()
 
+
 class ModelHandler:
     def __init__(self):
         self.model = None
@@ -12,8 +13,9 @@ class ModelHandler:
         self.users = 0
         self.progress = None
         self.alloc_at = None
+
     def allocate(self, progress=False):
-        if self.users < 0: # well that's not right
+        if self.users < 0:  # well that's not right
             self.users = 1
         else:
             self.users += 1
@@ -32,7 +34,8 @@ class ModelHandler:
                     yield (True, i)
                 self.progress = (True, i)
             self.allocation_lock = False
-            if self.alloc_at == None: self.alloc_at = time.perf_counter()
+            if self.alloc_at == None:
+                self.alloc_at = time.perf_counter()
             yield self.model
         elif self.model != None:
             yield self.model
@@ -44,6 +47,7 @@ class ModelHandler:
                     last_prog = self.progress
                     yield self.progress
             yield self.model
+
     def deallocate(self):
         self.users -= 1
         if self.users < 0:
