@@ -134,7 +134,7 @@ class ScrollRedoView(discord.ui.View):
     def __init__(self, **kwargs):
         # answers, context, tools, idx, edit, queue, loop, timeout, cutoff, continue_request
         self.__dict__.update(kwargs)
-        super().__init__(timeout=self.timeout)
+        super().__init__(timeout=kwargs["timeout"])
         self.idx = 0
         self.tok_count = [0] * len(self.answers)
         self.completed = [False] * len(self.answers)
@@ -312,7 +312,9 @@ class ScrollRedoView(discord.ui.View):
                     pass
                 else:
                     child.label = str(self.idx + 1)
-        self.children = children
+        self.clear_items()
+        for item in children:
+            self.add_item(item)
 
     def get_answer(self, idx=None, do_filter=True, return_think=False):
         if idx == None:
@@ -357,7 +359,7 @@ class ScrollRedoView(discord.ui.View):
 
     @discord.ui.button(label="⬅️", style=discord.ButtonStyle.primary)
     async def scroll_back(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         self.idx -= 1
         self.handle_disabled()
@@ -369,14 +371,14 @@ class ScrollRedoView(discord.ui.View):
         )
 
     @discord.ui.button(label="1", style=discord.ButtonStyle.grey)
-    async def number(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def number(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.show_menu = not self.show_menu
         self.handle_disabled()
         await interaction.response.edit_message(view=self)
 
     @discord.ui.button(row=3, label="🖊️", style=discord.ButtonStyle.primary)
     async def edit_message(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         await interaction.response.send_modal(
             EditModal(
@@ -389,7 +391,7 @@ class ScrollRedoView(discord.ui.View):
 
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.primary)
     async def scroll_forward(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         self.idx += 1
         self.handle_disabled()
@@ -402,7 +404,7 @@ class ScrollRedoView(discord.ui.View):
 
     @discord.ui.button(label="▶️", style=discord.ButtonStyle.green)
     async def run_tools(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         answer = self.get_answer(do_filter=False)
         await interaction.response.edit_message(view=self)
@@ -413,22 +415,9 @@ class ScrollRedoView(discord.ui.View):
             except Exception as e:
                 print(repr(e))
 
-    # @discord.ui.string_select(row=2, min_values=1, max_values=1, options=[])
-    # async def select_prompt(
-    #     self, select: discord.ui.StringSelect, interaction: discord.Interaction
-    # ):
-    #     self.idx = int(select.values[0])
-    #     self.handle_disabled()
-    #     answer = self.get_answer()
-    #     message = Message(interaction.message.id, answer, "assistant")
-    #     self.context.history.edit_message(message)
-    #     await interaction.response.edit_message(
-    #         content=answer[:char_lim] if answer != "" else "...", view=self
-    #     )
-
     @discord.ui.button(row=3, label="💭", style=discord.ButtonStyle.grey)
     async def send_thoughts(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         await interaction.response.send_message(
             content=self.get_thoughts()[:char_lim], ephemeral=True
@@ -438,7 +427,8 @@ class ScrollRedoView(discord.ui.View):
 class PromptSelect(discord.ui.Select):
     def __init__(self, parent: ScrollRedoView):
         super().__init__(
-            options=parent.options,
+            options=parent.prompt_options,
+            row=2,
         )
         self.pv = parent
 
@@ -486,7 +476,7 @@ class EditButton(discord.ui.View):
 
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.blurple)
     async def edit_button(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         edit_modal = EditModal(
             interaction.message.content,
@@ -504,7 +494,7 @@ class ResetContextButton(discord.ui.View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.red)
     async def reset_button(
-        self, button: discord.ui.Button, interaction: discord.Interaction
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         ignored_ids = [0]
         if len([x for x in self.history.history if x not in ignored_ids]) > 0:
