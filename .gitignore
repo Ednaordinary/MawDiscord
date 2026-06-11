@@ -16,6 +16,8 @@ data
 models
 log.txt
 .env
+proxy
+synapse/config.json
 
 #uv
 uv.lock
