@@ -103,6 +103,7 @@ class Exl3Engine:
         pre_think_text="",
         post_think=0,
         image_embeds=None,
+        synapse = False,
     ):
         ids = (
             self.tokenizer.encode(prompt, add_bos=add_bos).to("cpu")
@@ -150,7 +151,7 @@ class Exl3Engine:
                     pre_think_text += text
                 if text == "</think>":
                     think_switch = True
-                if post_think >= 2000:  # Force stop after 2000 sent characters
+                if not synapse and post_think >= 2000:  # Force stop after 2000 sent characters
                     await job.cancel()
                     queue.put(True)
                     return
@@ -215,6 +216,7 @@ class Exl3Engine:
         add_bos=True,
         max_tokens=256,
         image_embeds=None,
+        synapse=False,
     ):
         queue = Queue()
         asyncio.run_coroutine_threadsafe(
@@ -226,6 +228,7 @@ class Exl3Engine:
                 sampler,
                 queue,
                 image_embeds=image_embeds,
+                synapse=synapse,
             ),
             self.engineloop.loop,
         )

@@ -11,8 +11,14 @@ with open(str(Path(__file__).parent) + "/config.json", "r") as config_file:
 
 
 class Container:
-    def __init__(self):
-        self.container = client.containers.create(**client_config)
+    def __init__(self, name=None):
+        if name:
+            try:
+                self.container = client.containers.get(name)
+            except:
+                self.container = client.containers.create(**client_config)
+        else:
+            self.container = client.containers.create(**client_config)
         self.users = 0
 
     def run(self, cmd):
