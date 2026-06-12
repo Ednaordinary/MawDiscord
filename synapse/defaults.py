@@ -7,10 +7,33 @@ class SynapseDefaults:
     file_seeker = "You are the special file seeking neuron and have an extra command: upload. Your job is to seek out the file with the following description and call upload on it:\n"
 
     def get_cortex_prompt(self):
-        return self.cortex_prompt + "\n" + self.container_state + "\n" + self.cortex_tutorial
+        return (
+            self.cortex_prompt
+            + "\n"
+            + self.container_state
+            + "\n"
+            + self.cortex_tutorial
+        )
 
     def get_neuron_prompt(self, prompt):
-        return self.neuron_prompt + " Your task is\n" + prompt + "\n" + self.container_state + "\n" + self.neuron_tutorial
+        return (
+            self.neuron_prompt
+            + " Your task is\n"
+            + prompt
+            + "\n"
+            + self.container_state
+            + "\n"
+            + self.neuron_tutorial
+        )
 
     def get_seeker_prompt(self, prompt):
-        return self.neuron_prompt + "\n" + self.container_state + "\n" + self.neuron_tutorial + "\n" + self.file_seeker + prompt
+        return (
+            self.neuron_prompt
+            + "\n"
+            + self.container_state
+            + "\n"
+            + self.neuron_tutorial
+            + "\n"
+            + self.file_seeker
+            + prompt
+        )

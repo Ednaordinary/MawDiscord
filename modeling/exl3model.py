@@ -103,7 +103,7 @@ class Exl3Engine:
         pre_think_text="",
         post_think=0,
         image_embeds=None,
-        synapse = False,
+        synapse=False,
     ):
         ids = (
             self.tokenizer.encode(prompt, add_bos=add_bos).to("cpu")
@@ -151,7 +151,9 @@ class Exl3Engine:
                     pre_think_text += text
                 if text == "</think>":
                     think_switch = True
-                if not synapse and post_think >= 2000:  # Force stop after 2000 sent characters
+                if (
+                    not synapse and post_think >= 2000
+                ):  # Force stop after 2000 sent characters
                     await job.cancel()
                     queue.put(True)
                     return

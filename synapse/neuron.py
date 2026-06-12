@@ -1,5 +1,3 @@
-
-
 class Neuron:
     def __init__(self, parent=None):
         self.parent = parent
@@ -14,6 +12,3 @@ class Neuron:
 
     def complete_answer(self, idx):
         pass
-
-class Cortex:
-    
