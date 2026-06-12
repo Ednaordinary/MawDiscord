@@ -341,7 +341,7 @@ async def on_ready():
 
 
 @client.tree.command(
-    description="Resets the context of Maw for the whole server (not including characters)"
+    description="Resets the context of Maw for the channel (not including characters)"
 )
 async def reset(
     interaction: discord.Interaction,
@@ -356,7 +356,7 @@ async def reset(
         if len([x for x in history.history if x.message_id not in ignored_ids]) > 0:
             view = ResetContextButton(history=history)
             await interaction.response.send_message(
-                content="Are you sure? This will delete Maws memory in this server, not including characters or config.",
+                content="Are you sure? This will delete Maws memory in this channel, not including characters or config.",
                 view=view,
             )
         else:
