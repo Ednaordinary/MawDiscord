@@ -25,6 +25,8 @@ from character.defaults import MawPrompts
 from character.auto import SelfResponder
 from character.config import Config
 
+from synapse.views import SynapseModal
+
 from util import (
     init,
     get_path,
@@ -482,6 +484,24 @@ async def style_set(
     history_path = get_path("maw", "history", interaction)
     get_history(history_path, histories, config_file)
     await interaction.response.send_message(content="Style set.")
+
+
+@client.tree.command(description="Begins a synapse session")
+async def synapse(
+    interaction: discord.Interaction,
+):
+    if not dev_check(dev_mode, owner, interaction.user):
+        await interaction.response.send_message(
+            "### >>> Maw is in dev mode. Please try again later."
+        )
+    else:
+        if interaction.user.id != owner:
+            await interaction.response.send_message(
+                "Synapse is a work-in-progress feature."
+            )
+            return
+        modal = SynapseModal(histories)
+        await interaction.response.send_modal(modal)
 
 
 print("Starting up..")

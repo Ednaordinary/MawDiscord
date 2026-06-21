@@ -6,34 +6,40 @@ class SynapseDefaults:
     neuron_tutorial = "Your entire output is considered a set of commands to the container. Each line is it's own shell, so 'source', 'export' and similar only have effect within that line, and \\ does not work. In addition to normal bash, you have a few extra commands. msg will message your parent neuron, so consider using it to communicate that your task is done. spawn will create a child neuron, if you would like to break your task down futher. You can run multiple lines in one turn, but avoid running commands that are dependent on each other because you will not get stdout and stderr until your next turn. You cannot use normal text editors like vim and all of your commands will timeout after 1 minute, so be creative with you bash."
     file_seeker = "You are the special file seeking neuron and have an extra command: upload. Your job is to seek out the file with the following description and call upload on it:\n"
 
-    def get_cortex_prompt(self):
+    def get_cortex_prompt(name: str, description: str):
         return (
-            self.cortex_prompt
+            SynapseDefaults.cortex_prompt
             + "\n"
-            + self.container_state
+            + SynapseDefaults.container_state
             + "\n"
-            + self.cortex_tutorial
+            + SynapseDefaults.cortex_tutorial
+            + "\nYou are in charge of the project: "
+            + name.strip()
+            + "\n\nDescription:\n"
+            + description.strip()
         )
 
-    def get_neuron_prompt(self, prompt):
+    def get_neuron_prompt(prompt: str, description: str):
         return (
-            self.neuron_prompt
+            SynapseDefaults.neuron_prompt
             + " Your task is\n"
             + prompt
             + "\n"
-            + self.container_state
+            + SynapseDefaults.container_state
             + "\n"
-            + self.neuron_tutorial
+            + SynapseDefaults.neuron_tutorial
+            + "\n\nThe description of the project is:\n"
+            + description
         )
 
-    def get_seeker_prompt(self, prompt):
+    def get_seeker_prompt(prompt: str):
         return (
-            self.neuron_prompt
+            SynapseDefaults.neuron_prompt
             + "\n"
-            + self.container_state
+            + SynapseDefaults.container_state
             + "\n"
-            + self.neuron_tutorial
+            + SynapseDefaults.neuron_tutorial
             + "\n"
-            + self.file_seeker
+            + SynapseDefaults.file_seeker
             + prompt
         )

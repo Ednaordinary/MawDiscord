@@ -20,6 +20,7 @@ class Container:
         else:
             self.container = client.containers.create(**client_config)
         self.users = 0
+        self.name = self.container.name
 
     def run(self, cmd):
         self.users += 1

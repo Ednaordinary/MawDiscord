@@ -64,7 +64,7 @@ def get_path(path_type="maw", data_type="history", obj=None):
                         + str(char_id)
                         + "/history.json"
                     )
-            if data_type == "config":
+            elif data_type == "config":
                 if server_id == None:
                     return "data/dms/" + str(char_id) + "/config.json"
                 else:
@@ -90,7 +90,7 @@ def get_path(path_type="maw", data_type="history", obj=None):
                     + str(char_id)
                     + "/history.json"
                 )
-            if data_type == "config":
+            elif data_type == "config":
                 return (
                     "data/servers/"
                     + str(server_id)
@@ -98,6 +98,32 @@ def get_path(path_type="maw", data_type="history", obj=None):
                     + str(char_id)
                     + "/config.json"
                 )
+            else:
+                return None
+        else:
+            return None
+    elif path_type == "synapse":
+        if char_id != None and server_id != None:
+            if data_type == "history":
+                return (
+                    "data/servers/"
+                    + str(server_id)
+                    + "/syn/"
+                    + str(char_id)
+                    + "/history.json"
+                )
+            elif data_type == "config":
+                return (
+                    "data/servers/"
+                    + str(server_id)
+                    + "/syn/"
+                    + str(char_id)
+                    + "/config.json"
+                )
+            else:
+                return None
+        else:
+            return None
     else:
         return None
 
