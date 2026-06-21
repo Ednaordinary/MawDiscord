@@ -461,7 +461,7 @@ class EditModal(discord.ui.Modal):
         )
         self.add_item(self.content)
 
-    async def callback(self, interaction: discord.Interaction):
+    async def on_submit(self, interaction: discord.Interaction):
         message = Message(self.message_id, self.content.value, self.role)
         self.history.edit_message(message)
         await interaction.response.edit_message(content=self.content.value)
@@ -546,16 +546,16 @@ class CharacterModal(discord.ui.Modal):
 
         self.add_item(self.environment)
 
-    async def callback(self, interaction: discord.Interaction) -> None:
+    async def on_submit(self, interaction: discord.Interaction) -> None:
         if self.description.value[-1] != ".":
             description = self.description.value + "."
         else:
             description = self.description.value
         prompt = "Your name is " + self.name.value + ". " + description
-        root = await interaction.send(prompt)
+        root = await interaction.response.send_message(prompt)
         try:
             try:
-                root = await root.fetch()
+                root = await root.resource.fetch()
                 thread = await root.create_thread(name=self.name.value)
             except:
                 thread = await root.create_thread(name=self.name.value)

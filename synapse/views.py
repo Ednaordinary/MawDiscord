@@ -1,5 +1,6 @@
 import sys
 import discord
+import traceback
 
 from .defaults import SynapseDefaults
 from .container import Container
@@ -13,7 +14,7 @@ from util import get_path, get_history, FakeHistObj
 class SynapseModal(discord.ui.Modal):
     def __init__(self, histories):
         super().__init__(
-            title="Make Character",
+            title="Create Synapse Session",
             timeout=60 * 60 * 24,  # 1 day
         )
         self.histories = histories
@@ -59,29 +60,34 @@ class SynapseModal(discord.ui.Modal):
 
         self.add_item(self.neuron_prompt)
 
-    async def callback(self, interaction: discord.Interaction) -> None:
-        root = await interaction.response.send("Starting a synapse session.")
+    async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
+            root = await interaction.response.send("Starting a synapse session.")
             try:
-                root = await root.fetch()
-                thread = await root.create_thread(name=self.name.value)
+                try:
+                    root = await root.fetch()
+                    thread = await root.create_thread(name=self.name.value)
+                except:
+                    thread = await root.create_thread(name=self.name.value)
             except:
-                thread = await root.create_thread(name=self.name.value)
+                await root.edit("Thread could not be created (are you already in one?)")
+            else:
+                await thread.join()
+                hist_obj = FakeHistObj(thread.id, interaction.guild.id)
+                history_path = get_path("syn", "history", hist_obj)
+                prompt = SynapseDefaults.get_cortex_prompt(
+                    self.name.value, self.description.value
+                )
+                history = get_history(history_path, self.histories, prompt, char=True)
+                config_path = get_path("syn", "config", hist_obj)
+                config_file = Config(config_path)
+                config = config_file.get()
+                config["name"] = self.name.value
+                config["description"] = self.description.value
+                config["cortex_prompt"] = self.cortex_prompt.value or ""
+                config["neuron_prompt"] = self.neuron_prompt.value or ""
+                container = Container()
+                config["container"] = container.name
+                config_file.write(config)
         except:
-            await root.edit("Thread could not be created (are you already in one?)")
-        else:
-            await thread.join()
-            hist_obj = FakeHistObj(thread.id, interaction.guild.id)
-            history_path = get_path("syn", "history", hist_obj)
-            prompt = SynapseDefaults.get_cortex_prompt(
-                self.name.value, self.description.value
-            )
-            history = get_history(history_path, self.histories, prompt, char=True)
-            config_path = get_path("syn", "config", hist_obj)
-            config_file = Config(config_path)
-            config = config_file.get()
-            config["name"] = self.name.value
-            config["cortex_prompt"] = self.description.value
-            container = Container()
-            config["container"] = container.name
-            config_file.write(config)
+            print(traceback.print_exc())
