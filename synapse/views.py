@@ -19,7 +19,7 @@ class SynapseModal(discord.ui.Modal):
         self.histories = histories
         self.name = discord.ui.TextInput(
             label="Project Name",
-            style=discord.TextInputStyle.short,
+            style=discord.TextStyle.short,
             placeholder="Name of the synapse session",
             required=True,
             min_length=0,
@@ -29,7 +29,7 @@ class SynapseModal(discord.ui.Modal):
 
         self.description = discord.ui.TextInput(
             label="Description",
-            style=discord.TextInputStyle.paragraph,
+            style=discord.TextStyle.paragraph,
             placeholder="Describe the project with whatever details synapse needs to complete it",
             required=True,
             min_length=30,
@@ -40,7 +40,7 @@ class SynapseModal(discord.ui.Modal):
         self.cortex_prompt = discord.ui.TextInput(
             label="Cortex Prompt",
             placeholder="Additional prompt for Cortex",
-            style=discord.TextInputStyle.paragraph,
+            style=discord.TextStyle.paragraph,
             required=False,
             min_length=10,
             max_length=1000,
@@ -51,7 +51,7 @@ class SynapseModal(discord.ui.Modal):
         self.neuron_prompt = discord.ui.TextInput(
             label="Neuron Prompt",
             placeholder="Additional prompt for Neurons",
-            style=discord.TextInputStyle.paragraph,
+            style=discord.TextStyle.paragraph,
             required=False,
             min_length=10,
             max_length=1000,

@@ -495,7 +495,7 @@ async def synapse(
             "### >>> Maw is in dev mode. Please try again later."
         )
     else:
-        if interaction.user.id != owner:
+        if interaction.user.id != owner.id:
             await interaction.response.send_message(
                 "Synapse is a work-in-progress feature."
             )

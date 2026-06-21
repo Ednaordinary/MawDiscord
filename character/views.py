@@ -452,9 +452,9 @@ class EditModal(discord.ui.Modal):
         self.history = history
         self.content = discord.ui.TextInput(
             label="Message",
-            style=discord.TextInputStyle.paragraph,
+            style=discord.TextStyle.paragraph,
             placeholder="New content of the message",
-            default_value=self.original_content[:char_lim],
+            default=self.original_content[:char_lim],
             required=True,
             min_length=1,
             max_length=char_lim,
@@ -517,7 +517,7 @@ class CharacterModal(discord.ui.Modal):
         self.histories = histories
         self.name = discord.ui.TextInput(
             label="Name",
-            style=discord.TextInputStyle.short,
+            style=discord.TextStyle.short,
             placeholder="Name of the character. Ex: Maw",
             required=True,
             min_length=0,
@@ -527,7 +527,7 @@ class CharacterModal(discord.ui.Modal):
 
         self.description = discord.ui.TextInput(
             label="Description",
-            style=discord.TextInputStyle.paragraph,
+            style=discord.TextStyle.paragraph,
             placeholder="Describe the character from a third person view. Ex: You are graceful.",
             required=True,
             min_length=30,
@@ -538,7 +538,7 @@ class CharacterModal(discord.ui.Modal):
         self.environment = discord.ui.TextInput(
             label="Starting environment",
             placeholder="The environment the character starts in. Ex: You in a large mansion.",
-            style=discord.TextInputStyle.paragraph,
+            style=discord.TextStyle.paragraph,
             required=True,
             min_length=10,
             max_length=1000,
