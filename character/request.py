@@ -13,7 +13,7 @@ from exllamav3 import ComboSampler, CustomSampler
 from exllamav3.generator.sampler.custom import *
 
 from .views import ScrollRedoView
-from .history import Message
+from .history import Message, History
 
 verbose = True
 resp_count = 5
@@ -130,7 +130,7 @@ class RequestContext:
     def __init__(self, message, bot_message, history, prompt, char, images=None):
         self.message = message
         self.bot_message = bot_message
-        self.history = history
+        self.history: History = history
         self.prompt = prompt
         self.char = char
         self.images = images
@@ -148,8 +148,13 @@ class TokenCount:
         return self.tokens
 
 
-class CharacterRequest(Request):
-    # __init__: context, cutoff, tools, edit, req_count
+class CharacterRequest:
+    def __init__(self, context, cutoff, tools, edit, req_count):
+        self.context: RequestContext = context
+        self.cutoff = cutoff
+        self.tools = tools
+        self.edit = edit
+        self.req_count = req_count
     def handle(self, engine, tokenizer, discord_loop, channel_queue):
         try:
             self.context.history.workers.append(int(self.context.bot_message.id))

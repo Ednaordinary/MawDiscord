@@ -62,7 +62,8 @@ class SynapseModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
-            root = await interaction.response.send("Starting a synapse session.")
+            root = await interaction.response.send_message("Starting a synapse session.")
+            root = root.resource
             try:
                 try:
                     root = await root.fetch()
@@ -89,5 +90,6 @@ class SynapseModal(discord.ui.Modal):
                 container = Container()
                 config["container"] = container.name
                 config_file.write(config)
+                await thread.send("Session created successfully. Send a message to start.")
         except:
             print(traceback.print_exc())

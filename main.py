@@ -57,7 +57,7 @@ model_loop = Exl3Loop()
 quant = (4, 3)
 model_handler = Exl3ModelHandler(
     "./models/qwen3.5-35b-a3b-heretic",
-    1024 * 256,
+    1024 * 128,
     quant,
     model_loop,
     draft="./models/qwen3.5-a3b-dflash-4bpw",
@@ -479,7 +479,7 @@ async def style_set(
     config_path = get_path("maw", "config", interaction)
     config_file = Config(config_path)
     config = config_file.get()
-    config["style"] = translation[int(choice)]
+    config["style"] = translation[int(choice.value)]
     config_file.write(config)
     history_path = get_path("maw", "history", interaction)
     get_history(history_path, histories, config_file)

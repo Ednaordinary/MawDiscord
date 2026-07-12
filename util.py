@@ -102,7 +102,7 @@ def get_path(path_type="maw", data_type="history", obj=None):
                 return None
         else:
             return None
-    elif path_type == "synapse":
+    elif path_type == "syn":
         if char_id != None and server_id != None:
             if data_type == "history":
                 return (
